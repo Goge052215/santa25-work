@@ -3,3 +3,4 @@ __pycache__/
 /start/__pycache__
 /.trae
 /data
+.DS_Store

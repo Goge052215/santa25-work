@@ -28,15 +28,26 @@ default_grid_configs = [
     (8, 12, False, True),
 ]
 
+# sa_params = {
+#     "Tmax": 0.11179901333601554,
+#     "Tmin": 0.047444327977129414,
+#     "nsteps": 387.97121157609575,
+#     "nsteps_per_T": 16.35954961421276,
+#     "position_delta": 0.061618140065500766,
+#     "angle_delta": 2.930163420191516,
+#     "angle_delta2": 20.526990795364707,
+#     "delta_t": 0.08859034625418066,
+# }
+
 sa_params = {
-    "Tmax": 0.11179901333601554,
-    "Tmin": 0.047444327977129414,
-    "nsteps": 387.97121157609575,
-    "nsteps_per_T": 16.35954961421276,
-    "position_delta": 0.061618140065500766,
-    "angle_delta": 2.930163420191516,
-    "angle_delta2": 20.526990795364707,
-    "delta_t": 0.08859034625418066,
+    "Tmax": 0.001,
+    "Tmin": 0.000001,
+    "nsteps": 10,
+    "nsteps_per_T": 10000,
+    "position_delta": 0.002,
+    "angle_delta": 1.0,
+    "angle_delta2": 1.0,
+    "delta_t": 0.002,
 }
 
 def submission(output_path=None):

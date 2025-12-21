@@ -7,7 +7,7 @@ To mail from shore to shore. \
 He needs the smallest box, indeed a square box, \
 To fit them all inside, \
 So he can mail these stocking stuffers \
-On his big long Christmas ride! \
+On his big long Christmas ride! 
 
 Here comes the problem, here comes the problem. \
 We need the smallest size! \
@@ -16,7 +16,7 @@ We need your expert eyes. \
 Can you find the best solution to help us pack \
 All the tiny trees inside? \
 We must find the optimal packing to help Santa Claus \
-And win a prize! \
+And win a prize! 
 
 ### The Challenge
 

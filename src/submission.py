@@ -5,6 +5,7 @@ import pandas as pd
 from multiprocessing import cpu_count, Pool
 from metric import score
 from optimization import sa_optimize, optimize_grid_config, get_final_grid_positions_extended
+from preprocess import get_tree_vertices
 from grid import get_initial_translations
 from tree import deletion_cascade_numba
 
@@ -140,7 +141,7 @@ def submission(output_path=None):
             (final_xs_200[i], final_ys_200[i], final_degs_200[i]) 
             for i in range(len(final_xs_200))
         ]
-    
+
     total_len = (200 * 201) // 2
     merged_xs = np.empty(total_len, dtype=np.float64)
     merged_ys = np.empty(total_len, dtype=np.float64)
@@ -158,9 +159,11 @@ def submission(output_path=None):
             merged_ys[start + i] = float(y)
             merged_degs[start + i] = float(deg)
         start += n
+    
     final_xs, final_ys, final_degs, _ = deletion_cascade_numba(
         merged_xs, merged_ys, merged_degs, np.arange(1, 201, dtype=np.int64)
     )
+    
     rows = []
     idx = 0
     for n in range(1, 201):

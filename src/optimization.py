@@ -5,17 +5,6 @@ from grid import create_grid_vertices_extended, get_initial_translations
 from preprocess import calculate_score_numba, has_any_overlap
 from numba import njit
 
-DEFAULT_SA_PARAMS = {
-    "Tmax": 0.11179901333601554,
-    "Tmin": 0.047444327977129414,
-    "nsteps": 388,
-    "nsteps_per_T": 16,
-    "position_delta": 0.061618140065500766,
-    "angle_delta": 2.930163420191516,
-    "angle_delta2": 20.526990795364707,
-    "delta_t": 0.08859034625418066,
-}
-
 # Simulated annealing optimization for grid translation.
 @njit(cache=True)
 def sa_optimize(seed_xs_init, seed_ys_init, seed_degs_init,

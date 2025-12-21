@@ -1,22 +1,22 @@
 ### Description
 
-Here comes a challenge, here comes a challenge,
-Right to your front door!
-Santa has tree toys, tiny tree toys,
-To mail from shore to shore.
-He needs the smallest box, indeed a square box,
-To fit them all inside,
-So he can mail these stocking stuffers
-On his big long Christmas ride!
+Here comes a challenge, here comes a challenge, \
+Right to your front door! \
+Santa has tree toys, tiny tree toys, \
+To mail from shore to shore. \
+He needs the smallest box, indeed a square box, \
+To fit them all inside, \
+So he can mail these stocking stuffers \
+On his big long Christmas ride! \
 
-Here comes the problem, here comes the problem.
-We need the smallest size!
-For one to two hundred trees in shipments,
-We need your expert eyes.
-Can you find the best solution to help us pack
-All the tiny trees inside?
-We must find the optimal packing to help Santa Claus
-And win a prize!
+Here comes the problem, here comes the problem. \
+We need the smallest size! \
+For one to two hundred trees in shipments, \
+We need your expert eyes. \
+Can you find the best solution to help us pack \
+All the tiny trees inside? \
+We must find the optimal packing to help Santa Claus \
+And win a prize! \
 
 ### The Challenge
 
@@ -51,6 +51,16 @@ id,x,y,deg
 002_1,s-0.541068,s0.259317,s51.66348
 etc.
 ```
+
+`sample_submission.csv` - a sample submission in the correct format
+
+- `id`: a combination of the n-tree count for the puzzle and the individual tree index within the puzzle
+- `x, y`: the 2-d coordinates of the tree; this point is defined at the center of the top of the trunk
+- `deg`: the rotation angle of the tree
+
+This Getting Started Notebook implements a basic greedy algorithm (which was used to construct the `sample_submission.csv`), demonstrates collision detection, and provides a visualization function.
+
+Note: The metric for this competition has been designed to reasonably maximize floating point precision during calculations, but cannot guarantee precision beyond what is displayed on the leaderboard.
 
 ---
 

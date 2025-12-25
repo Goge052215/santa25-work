@@ -9,8 +9,10 @@ from numba import njit
 @njit(cache=True)
 def sa_optimize(seed_xs_init, seed_ys_init, seed_degs_init,
     a_init, b_init, ncols, nrows, append_x, append_y,
+    row_phase_x_init, col_phase_y_init, shear_x_init, shear_y_init,
+    parity_row_deg_init, parity_col_deg_init,
     Tmax, Tmin, nsteps, nsteps_per_T, position_delta,
-    angle_delta, angle_delta2, delta_t, random_seed):
+    angle_delta, angle_delta2, delta_t, stagger_delta, shear_delta, parity_delta, random_seed):
 
     np.random.seed(random_seed)
     n_seeds = len(seed_xs_init)
@@ -24,14 +26,22 @@ def sa_optimize(seed_xs_init, seed_ys_init, seed_degs_init,
     a = a_init
     b = b_init
 
+    row_phase_x = row_phase_x_init
+    col_phase_y = col_phase_y_init
+    shear_x = shear_x_init
+    shear_y = shear_y_init
+    parity_row_deg = parity_row_deg_init
+    parity_col_deg = parity_col_deg_init
+
     # Create initial grid and check validity
     all_vertices = create_grid_vertices_extended(
         seed_xs, 
         seed_ys, 
         seed_degs, 
-        a, b, 
+        a, b,
         ncols, nrows, 
-        append_x, append_y
+        append_x, append_y,
+        row_phase_x, col_phase_y, shear_x, shear_y, parity_row_deg, parity_col_deg
     )
     
     if has_any_overlap(all_vertices):
@@ -47,11 +57,12 @@ def sa_optimize(seed_xs_init, seed_ys_init, seed_degs_init,
             seed_xs, 
             seed_ys, 
             seed_degs, 
-            a, b, 
+            a, b,
             ncols, 
             nrows, 
             append_x, 
-            append_y
+            append_y,
+            row_phase_x, col_phase_y, shear_x, shear_y, parity_row_deg, parity_col_deg
         )
 
     current_score = calculate_score_numba(all_vertices)
@@ -62,11 +73,17 @@ def sa_optimize(seed_xs_init, seed_ys_init, seed_degs_init,
     best_degs = seed_degs.copy()
     best_a = a
     best_b = b
+    best_row_phase_x = row_phase_x
+    best_col_phase_y = col_phase_y
+    best_shear_x = shear_x
+    best_shear_y = shear_y
+    best_parity_row_deg = parity_row_deg
+    best_parity_col_deg = parity_col_deg
 
     T = Tmax
     Tfactor = -math.log(Tmax / Tmin)
 
-    n_move_types = n_seeds + 2
+    n_move_types = n_seeds + 6
 
     for step in range(nsteps):
         for _ in range(nsteps_per_T):
@@ -95,21 +112,54 @@ def sa_optimize(seed_xs_init, seed_ys_init, seed_degs_init,
                 a = old_a + old_a * da
                 b = old_b + old_b * db
 
+            elif move_type == n_seeds + 1:
+                old_row_phase_x = row_phase_x
+                dpx = (np.random.random() * 2.0 - 1.0) * stagger_delta
+                row_phase_x = old_row_phase_x + dpx
+
+            elif move_type == n_seeds + 2:
+                old_col_phase_y = col_phase_y
+                dpy = (np.random.random() * 2.0 - 1.0) * stagger_delta
+                col_phase_y = old_col_phase_y + dpy
+
+            elif move_type == n_seeds + 3:
+                old_shear_x = shear_x
+                dsx = (np.random.random() * 2.0 - 1.0) * shear_delta
+                shear_x = old_shear_x + dsx
+
+            elif move_type == n_seeds + 4:
+                old_shear_y = shear_y
+                dsy = (np.random.random() * 2.0 - 1.0) * shear_delta
+                shear_y = old_shear_y + dsy
+
             else:
                 # Rotate all trees by same angle
                 old_degs = seed_degs.copy()
-                ddeg = (np.random.random() * 2.0 - 1.0) * angle_delta2
-                for i in range(n_seeds):
-                    seed_degs[i] = (seed_degs[i] + ddeg) % 360.0
+                dchoice = np.random.randint(0, 3)
+                if dchoice == 0:
+                    ddeg = (np.random.random() * 2.0 - 1.0) * angle_delta2
+                    for i in range(n_seeds):
+                        seed_degs[i] = (seed_degs[i] + ddeg) % 360.0
+                elif dchoice == 1:
+                    old_parity_row_deg = parity_row_deg
+                    dpr = (np.random.random() * 2.0 - 1.0) * parity_delta
+                    parity_row_deg = (old_parity_row_deg + dpr) % 360.0
+                    old_degs = old_degs  # keep reference for revert scope
+                else:
+                    old_parity_col_deg = parity_col_deg
+                    dpc = (np.random.random() * 2.0 - 1.0) * parity_delta
+                    parity_col_deg = (old_parity_col_deg + dpc) % 360.0
+                    old_degs = old_degs
             
             test_vertices = create_grid_vertices_extended(
                 seed_xs, 
                 seed_ys, 
                 seed_degs, 
-                a, b, 
+                a, b,
                 ncols, 
                 nrows, 
-                False, False
+                False, False,
+                row_phase_x, col_phase_y, shear_x, shear_y, parity_row_deg, parity_col_deg
             )
 
             if has_any_overlap(test_vertices):
@@ -121,20 +171,33 @@ def sa_optimize(seed_xs_init, seed_ys_init, seed_degs_init,
                 elif move_type == n_seeds:
                     a = old_a
                     b = old_b
+                elif move_type == n_seeds + 1:
+                    row_phase_x = old_row_phase_x
+                elif move_type == n_seeds + 2:
+                    col_phase_y = old_col_phase_y
+                elif move_type == n_seeds + 3:
+                    shear_x = old_shear_x
+                elif move_type == n_seeds + 4:
+                    shear_y = old_shear_y
                 else:
                     for i in range(n_seeds):
                         seed_degs[i] = old_degs[i]
+                    if dchoice == 1:
+                        parity_row_deg = old_parity_row_deg
+                    elif dchoice == 2:
+                        parity_col_deg = old_parity_col_deg
                 continue
                 
             new_vertices = create_grid_vertices_extended(
                 seed_xs, 
                 seed_ys, 
                 seed_degs, 
-                a, b, 
+                a, b,
                 ncols, 
                 nrows, 
                 append_x, 
-                append_y
+                append_y,
+                row_phase_x, col_phase_y, shear_x, shear_y, parity_row_deg, parity_col_deg
             )
 
             if has_any_overlap(new_vertices):
@@ -145,9 +208,21 @@ def sa_optimize(seed_xs_init, seed_ys_init, seed_degs_init,
                 elif move_type == n_seeds:
                     a = old_a
                     b = old_b
+                elif move_type == n_seeds + 1:
+                    row_phase_x = old_row_phase_x
+                elif move_type == n_seeds + 2:
+                    col_phase_y = old_col_phase_y
+                elif move_type == n_seeds + 3:
+                    shear_x = old_shear_x
+                elif move_type == n_seeds + 4:
+                    shear_y = old_shear_y
                 else:
                     for i in range(n_seeds):
                         seed_degs[i] = old_degs[i]
+                    if dchoice == 1:
+                        parity_row_deg = old_parity_row_deg
+                    elif dchoice == 2:
+                        parity_col_deg = old_parity_col_deg
                 continue
 
             new_score = calculate_score_numba(new_vertices)
@@ -170,6 +245,12 @@ def sa_optimize(seed_xs_init, seed_ys_init, seed_degs_init,
                     best_degs = seed_degs.copy()
                     best_a = a
                     best_b = b
+                    best_row_phase_x = row_phase_x
+                    best_col_phase_y = col_phase_y
+                    best_shear_x = shear_x
+                    best_shear_y = shear_y
+                    best_parity_row_deg = parity_row_deg
+                    best_parity_col_deg = parity_col_deg
             else:
                 # Revert
                 if move_type < n_seeds:
@@ -179,19 +260,31 @@ def sa_optimize(seed_xs_init, seed_ys_init, seed_degs_init,
                 elif move_type == n_seeds:
                     a = old_a
                     b = old_b
+                elif move_type == n_seeds + 1:
+                    row_phase_x = old_row_phase_x
+                elif move_type == n_seeds + 2:
+                    col_phase_y = old_col_phase_y
+                elif move_type == n_seeds + 3:
+                    shear_x = old_shear_x
+                elif move_type == n_seeds + 4:
+                    shear_y = old_shear_y
                 else:
                     for i in range(n_seeds):
                         seed_degs[i] = old_degs[i]
+                    if dchoice == 1:
+                        parity_row_deg = old_parity_row_deg
+                    elif dchoice == 2:
+                        parity_col_deg = old_parity_col_deg
             
         # Exponential cooling
         T = Tmax * math.exp(Tfactor * (step + 1) / nsteps)
 
-    return best_score, best_xs, best_ys, best_degs, best_a, best_b
+    return best_score, best_xs, best_ys, best_degs, best_a, best_b, best_row_phase_x, best_col_phase_y, best_shear_x, best_shear_y, best_parity_row_deg, best_parity_col_deg
 
 @njit(cache=True)
 def get_final_grid_positions_extended(
     seed_xs, seed_ys, seed_degs, a, b, 
-    ncols, nrows, append_x, append_y):
+    ncols, nrows, append_x, append_y, row_phase_x, col_phase_y, shear_x, shear_y, parity_row_deg, parity_col_deg):
 
     n_seeds = len(seed_xs)
 
@@ -210,25 +303,25 @@ def get_final_grid_positions_extended(
     for s in range(n_seeds):
         for col in range(ncols):
             for row in range(nrows):
-                xs[idx] = seed_xs[s] + col * a
-                ys[idx] = seed_ys[s] + row * b
-                degs[idx] = seed_degs[s]
+                xs[idx] = seed_xs[s] + col * a + (row % 2) * row_phase_x + shear_x * row
+                ys[idx] = seed_ys[s] + row * b + (col % 2) * col_phase_y + shear_y * col
+                degs[idx] = (seed_degs[s] + (row % 2) * parity_row_deg + (col % 2) * parity_col_deg) % 360.0
                 idx += 1
     
     # Append x
     if append_x and n_seeds > 1:
         for row in range(nrows):
-            xs[idx] = seed_xs[1] + ncols * a
-            ys[idx] = seed_ys[1] + row * b
-            degs[idx] = seed_degs[1]
+            xs[idx] = seed_xs[1] + ncols * a + (row % 2) * row_phase_x + shear_x * row
+            ys[idx] = seed_ys[1] + row * b + (ncols % 2) * col_phase_y + shear_y * ncols
+            degs[idx] = (seed_degs[1] + (row % 2) * parity_row_deg + (ncols % 2) * parity_col_deg) % 360.0
             idx += 1
 
     # Append y
     if append_y and n_seeds > 1:
         for col in range(ncols):
-            xs[idx] = seed_xs[1] + col * a
-            ys[idx] = seed_ys[1] + nrows * b
-            degs[idx] = seed_degs[1]
+            xs[idx] = seed_xs[1] + col * a + (nrows % 2) * row_phase_x + shear_x * nrows
+            ys[idx] = seed_ys[1] + nrows * b + (col % 2) * col_phase_y + shear_y * col
+            degs[idx] = (seed_degs[1] + (nrows % 2) * parity_row_deg + (col % 2) * parity_col_deg) % 360.0
             idx += 1
 
     return xs, ys, degs
@@ -250,11 +343,13 @@ def optimize_grid_config(args):
     n_append_y = ncols if append_y else 0
     n_trees = n_base + n_append_x + n_append_y
 
-    best_score, best_xs, best_ys, best_degs, best_a, best_b = sa_optimize(
+    best_score, best_xs, best_ys, best_degs, best_a, best_b, best_row_phase_x, best_col_phase_y, best_shear_x, best_shear_y, best_parity_row_deg, best_parity_col_deg = sa_optimize(
         seed_xs, seed_ys, seed_degs,
         a_init, b_init,
         ncols, nrows,
         append_x, append_y,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0,
         params["Tmax"],
         params["Tmin"],
         params["nsteps"],
@@ -263,6 +358,9 @@ def optimize_grid_config(args):
         params["angle_delta"],
         params["angle_delta2"],
         params["delta_t"],
+        params.get("stagger_delta", 0.01),
+        params.get("shear_delta", 0.01),
+        params.get("parity_delta", 0.5),
         seed,
     )
 
@@ -270,7 +368,8 @@ def optimize_grid_config(args):
     final_xs, final_ys, final_degs = get_final_grid_positions_extended(
         best_xs, best_ys, best_degs, 
         best_a, best_b, ncols, nrows, 
-        append_x, append_y
+        append_x, append_y,
+        best_row_phase_x, best_col_phase_y, best_shear_x, best_shear_y, best_parity_row_deg, best_parity_col_deg
     )
 
     tree_data = [

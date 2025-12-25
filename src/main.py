@@ -131,7 +131,10 @@ def main():
         "position_delta": 0.061618140065500766,
         "angle_delta": 2.930163420191516,
         "angle_delta2": 20.526990795364707,
-        "delta_t": 0.08859034625418066
+        "delta_t": 0.08859034625418066,
+        "stagger_delta": 0.02,
+        "shear_delta": 0.02,
+        "parity_delta": 0.5,
     }
 
     t0 = time.time()
@@ -141,8 +144,10 @@ def main():
     _ = sa_optimize(
         dummy_xs, dummy_ys, dummy_degs,
         1.0, 1.0, 2, 2, False, False,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0,
         0.001, 0.0001, 2, 10,
-        0.01, 10.0, 10.0, 0.01, 42
+        0.01, 10.0, 10.0, 0.01, 0.02, 0.02, 0.5, 42
     )
 
     tasks = []

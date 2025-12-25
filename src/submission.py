@@ -49,6 +49,9 @@ sa_params = {
     "angle_delta": 1.0,
     "angle_delta2": 1.0,
     "delta_t": 0.002,
+    "stagger_delta": 0.02,
+    "shear_delta": 0.02,
+    "parity_delta": 0.5,
 }
 
 def submission(output_path=None):
@@ -89,6 +92,12 @@ def submission(output_path=None):
         2,
         False,
         False,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
         0.001,
         0.0001,
         2,
@@ -97,6 +106,9 @@ def submission(output_path=None):
         10.0,
         10.0,
         0.01,
+        0.02,
+        0.02,
+        0.5,
         42,
     )
     tasks = []
@@ -135,7 +147,7 @@ def submission(output_path=None):
         a_fallback = max(a_init, a_test * 1.5)
         b_fallback = max(b_init, b_test * 1.5)
         final_xs_200, final_ys_200, final_degs_200 = get_final_grid_positions_extended(
-            seed_xs, seed_ys, seed_degs, a_fallback, b_fallback, 8, 12, False, True
+            seed_xs, seed_ys, seed_degs, a_fallback, b_fallback, 8, 12, False, True, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         )
         tree_data_200 = [
             (final_xs_200[i], final_ys_200[i], final_degs_200[i]) 

@@ -3,7 +3,7 @@ from preprocess import get_tree_vertices, compute_bounding_box
 
 @njit(cache=True)
 def create_grid_vertices_extended(seed_xs, seed_ys, seed_degs, 
-a, b, ncols, nrows, append_x, append_y):
+a, b, ncols, nrows, append_x, append_y, row_phase_x, col_phase_y, shear_x, shear_y, parity_row_deg, parity_col_deg):
     """
     Create grid of tree vertices by translation with optional append.
 
@@ -24,23 +24,26 @@ a, b, ncols, nrows, append_x, append_y):
     for s in range(n_seeds):
         for col in range(ncols):
             for row in range(nrows):
-                cx = seed_xs[s] + col * a
-                cy = seed_ys[s] + row * b
-                all_vertices.append(get_tree_vertices(cx, cy, seed_degs[s]))
+                cx = seed_xs[s] + col * a + (row % 2) * row_phase_x + shear_x * row
+                cy = seed_ys[s] + row * b + (col % 2) * col_phase_y + shear_y * col
+                deg = seed_degs[s] + (row % 2) * parity_row_deg + (col % 2) * parity_col_deg
+                all_vertices.append(get_tree_vertices(cx, cy, deg))
 
     # Append in x direction
     if append_x and n_seeds > 1:
         for row in range(nrows):
-            cx = seed_xs[1] + ncols * a
-            cy = seed_ys[1] + row * b
-            all_vertices.append(get_tree_vertices(cx, cy, seed_degs[1]))
+            cx = seed_xs[1] + ncols * a + (row % 2) * row_phase_x + shear_x * row
+            cy = seed_ys[1] + row * b + (ncols % 2) * col_phase_y + shear_y * ncols
+            deg = seed_degs[1] + (row % 2) * parity_row_deg + (ncols % 2) * parity_col_deg
+            all_vertices.append(get_tree_vertices(cx, cy, deg))
 
     # Append in y direction
     if append_y and n_seeds > 1:
         for col in range(ncols):
-            cx = seed_xs[1] + col * a
-            cy = seed_ys[1] + nrows * b
-            all_vertices.append(get_tree_vertices(cx, cy, seed_degs[1]))
+            cx = seed_xs[1] + col * a + (nrows % 2) * row_phase_x + shear_x * nrows
+            cy = seed_ys[1] + nrows * b + (col % 2) * col_phase_y + shear_y * col
+            deg = seed_degs[1] + (nrows % 2) * parity_row_deg + (col % 2) * parity_col_deg
+            all_vertices.append(get_tree_vertices(cx, cy, deg))
     
     return all_vertices
 

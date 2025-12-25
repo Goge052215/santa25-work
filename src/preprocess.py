@@ -4,6 +4,8 @@ import numpy as np
 from config import Config
 from numba import njit
 from numba.typed import List as NumbaList
+ 
+EPS = 1e-12
 
 TRUNK_W = Config.TRUNK_W
 TRUNK_H = Config.TRUNK_H
@@ -79,12 +81,34 @@ def point_in_polygon(px, py, vertices):
     n = vertices.shape[0]
     inside = False
     j = n - 1
+
+    # Treat boundary points as outside (touch allowed)
+    for i in range(n):
+        x1, y1 = vertices[i, 0], vertices[i, 1]
+        x2, y2 = vertices[(i + 1) % n, 0], vertices[(i + 1) % n, 1]
+        dx = x2 - x1
+        dy = y2 - y1
+        cross = dx * (py - y1) - dy * (px - x1)
+        if abs(cross) <= EPS:
+            minx = x1 if x1 < x2 else x2
+            maxx = x2 if x2 > x1 else x1
+            miny = y1 if y1 < y2 else y2
+            maxy = y2 if y2 > y1 else y1
+            if (px >= minx - EPS and px <= maxx + EPS and
+                py >= miny - EPS and py <= maxy + EPS):
+                return False
+
     for i in range(n):
         xi, yi = vertices[i, 0], vertices[i, 1]
         xj, yj = vertices[j, 0], vertices[j, 1]
-        if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi) + xi):
-            inside = not inside
+        # Shift py slightly to avoid counting boundary crossings
+        py_adj = py + EPS
+        if ((yi > py_adj) != (yj > py_adj)):
+            inter_x = (xj - xi) * (py_adj - yi) / (yj - yi) + xi
+            if px < inter_x - EPS:
+                inside = not inside
         j = i
+    
     return inside
 
 # check if two line segments intersect
@@ -95,11 +119,12 @@ def segments_intersect(p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y):
     d2x = p4x - p3x
     d2y = p4y - p3y
     det = d1x * d2y - d1y * d2x
-    if abs(det) < 1e-10:
+    if abs(det) < 1e-12:
         return False
     t = ((p3x - p1x) * d2y - (p3y - p1y) * d2x) / det
     u = ((p3x - p1x) * d1y - (p3y - p1y) * d1x) / det
-    return 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0
+    # Exclude endpoint-only contact to allow touches
+    return (EPS < t < 1.0 - EPS) and (EPS < u < 1.0 - EPS)
 
 # check if two polygons overlap (not just touch)
 @njit(cache=True)

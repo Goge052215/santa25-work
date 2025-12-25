@@ -4,6 +4,7 @@ import numpy as np
 from grid import create_grid_vertices_extended, get_initial_translations
 from preprocess import calculate_score_numba, has_any_overlap
 from numba import njit
+import numpy as np
 
 # Simulated annealing optimization for grid translation.
 @njit(cache=True)
@@ -364,12 +365,72 @@ def optimize_grid_config(args):
         seed,
     )
 
+    def _try_eval(px, py, sx, sy, pr, pc, a_val, b_val):
+        verts = create_grid_vertices_extended(
+            best_xs, best_ys, best_degs,
+            a_val, b_val,
+            ncols, nrows,
+            append_x, append_y,
+            px, py, sx, sy, pr, pc
+        )
+        if has_any_overlap(verts):
+            return None, None
+        return calculate_score_numba(verts), verts
+
+    px = best_row_phase_x
+    py = best_col_phase_y
+    sx = best_shear_x
+    sy = best_shear_y
+    pr = best_parity_row_deg
+    pc = best_parity_col_deg
+    a_val = best_a
+    b_val = best_b
+
+    step_px = params.get("stagger_delta", 0.01) * 0.5
+    step_py = params.get("stagger_delta", 0.01) * 0.5
+    step_sx = params.get("shear_delta", 0.01) * 0.5
+    step_sy = params.get("shear_delta", 0.01) * 0.5
+    step_pr = params.get("parity_delta", 0.5) * 0.5
+    step_pc = params.get("parity_delta", 0.5) * 0.5
+    step_a = params.get("delta_t", 0.01) * 0.5
+    step_b = params.get("delta_t", 0.01) * 0.5
+
+    improved = True
+    while improved:
+        improved = False
+        for delta, key in [(step_px, 0), (-step_px, 0), (step_py, 1), (-step_py, 1),
+                           (step_sx, 2), (-step_sx, 2), (step_sy, 3), (-step_sy, 3),
+                           (step_pr, 4), (-step_pr, 4), (step_pc, 5), (-step_pc, 5),
+                           (step_a, 6), (-step_a, 6), (step_b, 7), (-step_b, 7)]:
+            n_px, n_py, n_sx, n_sy, n_pr, n_pc, n_a, n_b = px, py, sx, sy, pr, pc, a_val, b_val
+            if key == 0:
+                n_px = px + delta
+            elif key == 1:
+                n_py = py + delta
+            elif key == 2:
+                n_sx = sx + delta
+            elif key == 3:
+                n_sy = sy + delta
+            elif key == 4:
+                n_pr = (pr + delta) % 360.0
+            elif key == 5:
+                n_pc = (pc + delta) % 360.0
+            elif key == 6:
+                n_a = a_val + a_val * delta
+            elif key == 7:
+                n_b = b_val + b_val * delta
+            s, v = _try_eval(n_px, n_py, n_sx, n_sy, n_pr, n_pc, n_a, n_b)
+            if s is not None and s < best_score - 1e-12:
+                best_score = s
+                px, py, sx, sy, pr, pc, a_val, b_val = n_px, n_py, n_sx, n_sy, n_pr, n_pc, n_a, n_b
+                improved = True
+
     # Get final grid positions
     final_xs, final_ys, final_degs = get_final_grid_positions_extended(
         best_xs, best_ys, best_degs, 
-        best_a, best_b, ncols, nrows, 
+        a_val, b_val, ncols, nrows, 
         append_x, append_y,
-        best_row_phase_x, best_col_phase_y, best_shear_x, best_shear_y, best_parity_row_deg, best_parity_col_deg
+        px, py, sx, sy, pr, pc
     )
 
     tree_data = [

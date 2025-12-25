@@ -152,6 +152,7 @@ def main():
 
     tasks = []
     tree_counts = []
+    num_starts = 4
     for i, (ncols, nrows, append_x, append_y) in enumerate(grid_configs):
         n_base = 2 * ncols * nrows
         n_append_x = nrows if append_x else 0
@@ -161,14 +162,15 @@ def main():
         if n_trees > 200:
             continue
 
-        seed = 42 + i * 1000
-        tasks.append((
-            ncols, nrows, 
-            append_x, append_y, 
-            initial_seeds, 
-            a_init, b_init, 
-            sa_params, seed
-        ))
+        for k in range(num_starts):
+            seed = 42 + i * 1000 + k
+            tasks.append((
+                ncols, nrows, 
+                append_x, append_y, 
+                initial_seeds, 
+                a_init, b_init, 
+                sa_params, seed
+            ))
         tree_counts.append(n_trees)
 
     num_workers = min(cpu_count(), len(tasks))
@@ -177,8 +179,12 @@ def main():
         results = pool.map(optimize_grid_config, tasks)
 
     result_dict = {}
+    best_scores = {}
     for n_trees, best_score, tree_data in results:
-        result_dict[n_trees] = tree_data
+        prev = best_scores.get(n_trees, None)
+        if prev is None or best_score < prev:
+            best_scores[n_trees] = best_score
+            result_dict[n_trees] = tree_data
     if 200 in result_dict:
         tree_data_200 = result_dict[200]
     else:

@@ -3,14 +3,12 @@ import time
 import numpy as np
 from preprocess import get_tree_vertices
 from optimization import sa_optimize, optimize_grid_config
-from numba.typed import List as NumbaList
 from shapely.geometry import Polygon as ShapelyPolygon
 from multiprocessing import cpu_count, Pool
 from metric import score
 from tree import deletion_cascade_numba
 from submission import submission
 
-import numpy as np
 import pandas as pd
 
 import sys

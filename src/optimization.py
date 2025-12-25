@@ -4,7 +4,7 @@ import numpy as np
 from grid import create_grid_vertices_extended, get_initial_translations
 from preprocess import calculate_score_numba, has_any_overlap
 from numba import njit
-import numpy as np
+from config import DEFAULT_SA_PARAMS
 
 # Simulated annealing optimization for grid translation.
 @njit(cache=True)

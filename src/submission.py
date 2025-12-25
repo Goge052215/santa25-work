@@ -1,11 +1,9 @@
 import os
-import time
 import numpy as np
 import pandas as pd
 from multiprocessing import cpu_count, Pool
 from metric import score
 from optimization import sa_optimize, optimize_grid_config, get_final_grid_positions_extended
-from preprocess import get_tree_vertices
 from grid import get_initial_translations
 from tree import deletion_cascade_numba
 

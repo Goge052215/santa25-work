@@ -1,8 +1,7 @@
 import math
-import numpy as np
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely import touches as shapely_touches
-from preprocess import get_tree_vertices, has_any_overlap, Config
+from preprocess import get_tree_vertices, has_any_overlap
 
 
 def to_shapely(verts):

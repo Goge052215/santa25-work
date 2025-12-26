@@ -146,9 +146,9 @@ $$
 $$
 
 and:
- $$
+$$
    p_x < \frac{(x_{i+1} - x_i)(p_y - y_i)}{(y_{i+1} - y_i)} + x_i \tag{2.2}
- $$
+$$
 
 #### 1.6 Segment Intersection
 
@@ -212,11 +212,11 @@ Each tree's vertices $V_{s,c,r}$ are obtained via `get_tree_vertices(cx, cy, ang
 
 Adds one tree at the end of each row (column index $= n_{\text{cols}}$):
 $$
-   \begin{aligned}
+\begin{aligned}
      x_{\text{append}} &= x_1 + n_{\text{cols}} \cdot a + (r \text{ mod } 2) \cdot \phi_x + \tau_x \cdot r \\
      y_{\text{append}} &= y_1 + n_{\text{rows}} \cdot b + (n_{\text{cols}} \text{ mod } 2) \cdot \phi_y + \tau_y \cdot n_{\text{cols}} \\
-     \theta_{\text{append}} &= \theta_1 + (r \text{ mod } 2) \cdot \Delta \theta_{\text{row}} + (n_{\text{cols}} \text{ mod } 2) \cdot \Delta \theta_{\text{col}} \tag{4.4}
-   \end{aligned}
+     \theta_{\text{append}} &= \theta_1 + (r \text{ mod } 2) \cdot \Delta \theta_{\text{row}} + (n_{\text{cols}} \text{ mod } 2) \cdot \Delta \theta_{\text{col}}
+   \end{aligned} \tag{4.4}
 $$
 
 Number of appended trees: $n_{\text{rows}}$
@@ -225,11 +225,11 @@ Number of appended trees: $n_{\text{rows}}$
 
 Adds one tree at the end of each column (row index $= n_{\text{rows}}$):
 $$
-  \begin{aligned}
+\begin{aligned}
     x_{\text{append}} &= x_1 + c \cdot a + (n_{\text{rows}} \text{ mod } 2) \cdot \phi_x + \tau_x \cdot n_{\text{rows}} \\
     y_{\text{append}} &= y_1 + n_{\text{rows}} \cdot b + (c \text{ mod } 2) \cdot \phi_y + \tau_y \cdot c \\
-    \theta_{\text{append}} &= \theta_1 + (n_{\text{rows}} \text{ mod } 2) \cdot \Delta \theta_{\text{row}} + (c \text{ mod } 2) \cdot \Delta \theta_{\text{col}} \tag{4.5}
-  \end{aligned}
+    \theta_{\text{append}} &= \theta_1 + (n_{\text{rows}} \text{ mod } 2) \cdot \Delta \theta_{\text{row}} + (c \text{ mod } 2) \cdot \Delta \theta_{\text{col}}
+  \end{aligned} \tag{4.5}
 $$
 
 Number of appended trees: $n_{\text{cols}}$
@@ -285,11 +285,11 @@ where
 
 For a tree at grid position $(i,j)$ and seed $k$. The Base Position is:
 $$
-  \begin{aligned}
+\begin{aligned}
     x_{i,j,k} &= x_k + i \cdot a + (j \text{ mod } 2) \cdot p_x + s_x \cdot j \\
     y_{i,j,k} &= y_k + j \cdot b + (i \text{ mod } 2) \cdot p_y + s_y \cdot i \\
-    \theta_{i,j,k} &= \left(\theta_k + (j \text{ mod } 2) \cdot r_r + (i \text{ mod } 2) \cdot r_c\right) \text{ mod } 360 \tag{6.1}
-  \end{aligned}
+    \theta_{i,j,k} &= \left(\theta_k + (j \text{ mod } 2) \cdot r_r + (i \text{ mod } 2) \cdot r_c\right) \text{ mod } 360 
+  \end{aligned} \tag{6.1}
 $$
 
 The total number of trees is:
@@ -353,17 +353,17 @@ $$
 
 7. Type $n_s+5$: Three sub-moves with probability $1/3$ each:
   - Global Rotation:
-  $$
+$$
     \theta_i \leftarrow (\theta_i + \delta_\theta) \bmod 360, \quad \delta_\theta \sim \mathrm{U}(-\Delta_{\text{angle}2}, \Delta_{\text{angle}2}) \tag{9.7.1}
-  $$
+$$
   - Perturb Row Parity Rotation:
-  $$
+$$
     r_r \leftarrow (r_r + \delta_{r_r}) \bmod 360, \quad \delta_{r_r} \sim \mathrm{U}(-\Delta_{\text{parity}}, \Delta_{\text{parity}}) \tag{9.7.2}
-  $$
+$$
   - Perturb Column Parity Rotation:
-  $$
+$$
     r_c \leftarrow (r_c + \delta_{r_c}) \bmod 360, \quad \delta_{r_c} \sim \mathrm{U}(-\Delta_{\text{parity}}, \Delta_{\text{parity}}) \tag{9.7.3}
-  $$
+$$
 
 #### 3.5 Metropolis-Hastings Acceptance Criterion
 
@@ -420,7 +420,7 @@ where
 
 Using the matern kernel with $\nu=2.5$:
 $$
-  k(\mathbf{x},\mathbf{x}') = \sigma^2 \left( 1 + \sqrt{5}r + \frac53r^2 \right) \exp\left(-\sqrt{5}r\right), \quad \text{where } r = \sqrt{\sum_i \frac{(x_i - x_i')^2}{\ell_i^2}} \tag{12.2}
+k(\mathbf{x},\mathbf{x}') = \sigma^2 \left( 1 + \sqrt{5}r + \frac53r^2 \right) \exp\left(-\sqrt{5}r\right), \quad \text{where } r = \sqrt{\sum_i \frac{(x_i - x_i')^2}{\ell_i^2}} \tag{12.2}
 $$
 
 where $\ell_i$ are length scales for each dimension $i$, and $\sigma^2$ is the variance.
@@ -470,10 +470,10 @@ and $\Phi(\cdot), \phi(\cdot)$ is the CDF and PDF of $\mathrm{N}(0, 1)$, respect
 
 1. Initialize: Sample `init_points` randomly within bounds
 2. Loop for n_iter iterations:
-  a. Fit $\mathcal{GP}$ to current observation $\mathcal{D}$
-  b. Find next point $\mathbf{x}_{t+1} = \arg \max_{\mathbf{x}} \alpha_{\mathbb{EI}}(\mathbf{x})$
-  c. Evaluate $f(\mathbf{x}_{t+1}) = -\text{total score}(\mathbf{x}_{t+1})$
-  d. Update the dataset $\mathcal{D}$ with $\{\mathbf{x}_{t+1}, f(\mathbf{x}_{t+1})\}$ accordingly
+    a. Fit $\mathcal{GP}$ to current observation $\mathcal{D}$
+    b. Find next point $\mathbf{x}_{t+1} = \arg \max_{\mathbf{x}} \alpha_{\mathbb{EI}}(\mathbf{x})$
+    c. Evaluate $f(\mathbf{x}_{t+1}) = -\text{total score}(\mathbf{x}_{t+1})$
+    d. Update the dataset $\mathcal{D}$ with $\{\mathbf{x}_{t+1}, f(\mathbf{x}_{t+1})\}$ accordingly
 
 For each parameter set $\mathbf{x}$, the code evaluates:
 $$
@@ -537,10 +537,10 @@ $$
 $$
 
  The objective function is:
- $$
+$$
    S(\mathcal{G}_n) = \text{get\_side\_length}(V(\mathcal{G}_n))
- $$
- 
+$$
+
  In code, `get_side_length` returns the side length of the smallest axis-aligned square bounding box that contains the union of tree polygons (i.e., the larger edge of the union's bounding rectangle).
 
 #### 5.4 Cascading Deletion Algorithm
@@ -565,7 +565,7 @@ $$
 
 This is a **greedy optimal** choice at each cascade level.
 
- **Monotonicity (typical, not guaranteed).** As group size increases, the bounding square side length often increases due to larger coverage, but strict monotonicity across all steps is not guaranteed by the greedy cascade.
+**Monotonicity (typical, not guaranteed).** As group size increases, the bounding square side length often increases due to larger coverage, but strict monotonicity across all steps is not guaranteed by the greedy cascade.
 
 ---
 

@@ -56,14 +56,14 @@ except Exception:
 # ----------------------------
 # CONFIG (edit paths if needed)
 # ----------------------------
-BASELINE_CSV = "/kaggle/input/santa-submission/submission.csv"
-BBOX3_BIN_IN = "/kaggle/input/santa-submission/bbox3"
+BASELINE_CSV = "submission/submission.csv"
+BBOX3_BIN_IN = "bbox3"
 
-WORK_SUBMISSION = "submission.csv"
-WORK_BBOX3_BIN = "./bbox3"
+WORK_SUBMISSION = "current_submission.csv"
+WORK_BBOX3_BIN = "./bbox3_runner"
 
-OUT_DIR = "improved_full3h"
-LOG_FILE = "improved_full3h.log"
+OUT_DIR = "logs"
+LOG_FILE = os.path.join(OUT_DIR, "improved_full3h.log")
 
 TOTAL_BUDGET_SEC = 2 * 3600
 SAFE_BUFFER_SEC = 300  # stop a bit early

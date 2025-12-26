@@ -13,7 +13,7 @@ def ve_marginal_prob(x, t, sigma_min=0.01, sigma_max=25):
 def ve_sde(t, sigma_min=0.01, sigma_max=25):
     sigma = sigma_min * (sigma_max / sigma_min) ** t
     drift_coeff = torch.tensor(0)
-    diffusion_coeff = sigma * torch.sqrt(torch.tensor(2 * (np.log(sigma_max) - np.log(sigma_min)), device=t.device))
+    diffusion_coeff = sigma * torch.sqrt(torch.tensor(2 * (np.log(sigma_max) - np.log(sigma_min)), device=t.device, dtype=torch.float32))
     return drift_coeff, diffusion_coeff
 
 def ve_prior(shape, sigma_min=0.01, sigma_max=25):
@@ -87,7 +87,7 @@ def lossFun(model, state, gnnFeatureData, marginalProbFunc):
     batchSize = int(state.batch.max().item() + 1)
     randomBatch = torch.rand(batchSize, device=model.device) * (1 - 0.01) + 0.01
     
-    actionMask = (state.z.reshape(batchSize, -1) == 0).float().reshape(-1, 1)
+    actionMask = (state.z == 0).float().reshape(-1, 1)
     perturbFactor = torch.randn_like(state.x, device=model.device) * actionMask
     perturbedStateX = state.x.clone()
     
@@ -101,8 +101,9 @@ def lossFun(model, state, gnnFeatureData, marginalProbFunc):
     o1 = o1 * actionMask
     
     delta = (o1) * std + perturbFactor
-    lossAll = (delta**2)
-    lossAll = lossAll.reshape(batchSize, -1).sum(dim=1) / state.x.shape[1]
+    lossPerNode = (delta**2).sum(dim=1)
+    lossAll = torch.zeros(batchSize, device=model.device)
+    lossAll = lossAll.index_add(0, state.batch, lossPerNode) / state.x.shape[1]
     
     weight = state.w.reshape(-1)
     weightSum = weight.sum()

@@ -438,20 +438,25 @@ if __name__ == '__main__':
     # n, m, x, y = args.n, args.m, args.x, args.y
     
     
-    # use torch.distributed.launch to set the local rank automatically
-    localRank = int(os.environ["LOCAL_RANK"])
-    worldSize = int(os.environ['WORLD_SIZE'])
-    # initialize the process group
-    print("preparing process group...")
-    dist.init_process_group("nccl", rank=localRank, world_size=worldSize)
+    localRank = int(os.environ.get("LOCAL_RANK", "0"))
+    worldSize = int(os.environ.get("WORLD_SIZE", "1"))
+    backend = "nccl" if torch.cuda.is_available() else "gloo"
+    if worldSize > 1:
+        print("preparing process group...")
+        dist.init_process_group(backend=backend, rank=localRank, world_size=worldSize)
     
     setRandomSeed(args.seed + localRank)
     
-    # create the model and move it to the local GPU
-    device = torch.device("mps", localRank)
+    if torch.cuda.is_available():
+        device = torch.device("cuda", localRank)
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print("device locked ", localRank)
-    torch.cuda.set_device(localRank)
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.set_device(localRank)
+        torch.cuda.empty_cache()
     torch.set_num_threads(16)
     
     if localRank == 0:
@@ -505,19 +510,26 @@ if __name__ == '__main__':
         if localRank == 0:
             print(f"No pretrained checkpoint found at {checkpoint_path}, initializing from scratch.")
 
-    score = DDP(score, device_ids=[localRank], output_device=localRank, find_unused_parameters=True)
-    paramToLearn = filter(lambda p: p.requires_grad, score.module.parameters())
+    if worldSize > 1:
+        if torch.cuda.is_available():
+            score = DDP(score, device_ids=[localRank], output_device=localRank, find_unused_parameters=True)
+        else:
+            score = DDP(score, find_unused_parameters=True)
+        score_module = score.module
+    else:
+        score_module = score
+    paramToLearn = filter(lambda p: p.requires_grad, score_module.parameters())
     optimizer = optim.AdamW(paramToLearn, lr=args.lr, weight_decay=1e-4)
     # create the dataset and the distributed sampler
     
-    dataset = list(map(lambda x, y, z, w: 
+    dataset = list(map(lambda x, y, z, w:
         Data(x=torch.tensor(x, dtype=torch.float32), 
              y=torch.tensor(y, dtype=torch.int64), 
              z=torch.tensor(z, dtype=torch.float32),
              w=torch.tensor(w, dtype=torch.float32)),
         actionsData, polyIdsData, paddingMaskData, weightsAll))
-    sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-    dataloader = DataLoader(dataset, batch_size=batchSize, shuffle=False, num_workers=0, sampler=sampler)
+    sampler = torch.utils.data.distributed.DistributedSampler(dataset) if worldSize > 1 else None
+    dataloader = DataLoader(dataset, batch_size=batchSize, shuffle=False if sampler is not None else True, num_workers=0, sampler=sampler)
     
     ema = ExponentialMovingAverage(score.parameters(), decay=args.ema_rate)
     # optimizer = optim.Adam(score.parameters(), lr=2e-4)
@@ -534,7 +546,8 @@ if __name__ == '__main__':
         totLoss = 0
         totDelta = 0
         totLen = 0
-        sampler.set_epoch(epoch)
+        if sampler is not None:
+            sampler.set_epoch(epoch)
         
         for i, choosedData in enumerate(dataloader):
             nowLoss = 0
@@ -582,13 +595,13 @@ if __name__ == '__main__':
         
         if (epoch) % 2 == 0 and localRank == 0:
             torch.save(score, str(checkpoint_pickle_path))
-            torch.save(score.module.state_dict(), str(checkpoint_path))
+            torch.save(score_module.state_dict(), str(checkpoint_path))
             
         if (epoch) % args.vali_freq == 0 and localRank == 0:
             snapshot_pickle = SNAPSHOT_DIR / f"score_model_epoch{epoch}.pkl"
             snapshot_weights = SNAPSHOT_DIR / f"score_model_epoch{epoch}.pth"
             torch.save(score, str(snapshot_pickle))
-            torch.save(score.module.state_dict(), str(snapshot_weights))
+            torch.save(score_module.state_dict(), str(snapshot_weights))
         
         
         if (epoch) % args.vali_freq == 0:
@@ -597,7 +610,7 @@ if __name__ == '__main__':
             vali_begin = vali_per_gpu * localRank
             vali_end = min(vali_per_gpu * (localRank + 1), vali_whole_size)
         
-            vali_info = vali_all(polyIdsVali[vali_begin:vali_end], actionsVali[vali_begin:vali_end], paddingMaskVali[vali_begin:vali_end], score.module, sde_fn, gnnFeatureData, polyVertices)
+            vali_info = vali_all(polyIdsVali[vali_begin:vali_end], actionsVali[vali_begin:vali_end], paddingMaskVali[vali_begin:vali_end], score_module, sde_fn, gnnFeatureData, polyVertices)
             # vali_info: rm_vali_cnt_all, rm_sum_util_all, rm_wrst_util_all, before_sum_inter_all, before_wrst_inter_all, before_vali_cnt_all
             
             rm_vali_cnt_all = torch.tensor(vali_info[0], dtype=torch.int64).to(device)
@@ -614,18 +627,19 @@ if __name__ == '__main__':
             total_rm_time = torch.tensor(vali_info[11], dtype=torch.float32).to(device)
             
             
-            dist.all_reduce(rm_vali_cnt_all)
-            dist.all_reduce(rm_sum_util_all)
-            dist.all_reduce(rm_wrst_util_all, op=dist.ReduceOp.MIN)
-            dist.all_reduce(rm_best_util_all, op=dist.ReduceOp.MAX)
-            dist.all_reduce(before_sum_inter_all)
-            dist.all_reduce(before_wrst_inter_all, op=dist.ReduceOp.MAX)
-            dist.all_reduce(before_vali_cnt_all)
-            dist.all_reduce(bef_sum_util_all)
-            dist.all_reduce(bef_wrst_util_all, op=dist.ReduceOp.MIN)
-            dist.all_reduce(bef_best_util_all, op=dist.ReduceOp.MAX)
-            dist.all_reduce(total_gen_time)
-            dist.all_reduce(total_rm_time)
+            if worldSize > 1:
+                dist.all_reduce(rm_vali_cnt_all)
+                dist.all_reduce(rm_sum_util_all)
+                dist.all_reduce(rm_wrst_util_all, op=dist.ReduceOp.MIN)
+                dist.all_reduce(rm_best_util_all, op=dist.ReduceOp.MAX)
+                dist.all_reduce(before_sum_inter_all)
+                dist.all_reduce(before_wrst_inter_all, op=dist.ReduceOp.MAX)
+                dist.all_reduce(before_vali_cnt_all)
+                dist.all_reduce(bef_sum_util_all)
+                dist.all_reduce(bef_wrst_util_all, op=dist.ReduceOp.MIN)
+                dist.all_reduce(bef_best_util_all, op=dist.ReduceOp.MAX)
+                dist.all_reduce(total_gen_time)
+                dist.all_reduce(total_rm_time)
             
             if localRank == 0:
                 rm_vali_cnt_all = float(rm_vali_cnt_all.item()) / float(vali_whole_size)
@@ -667,7 +681,7 @@ if __name__ == '__main__':
             
             
             with torch.no_grad():
-                samples, res = pc_sampler_state(score.module, sde_fn, len(valiPolyIds), valiPolyIds, gnnFeatureData, paddingMaskData)
+                samples, res = pc_sampler_state(score_module, sde_fn, len(valiPolyIds), valiPolyIds, gnnFeatureData, paddingMaskData)
             
             before_vali_cnt, rm_vali_cnt, gt_util, \
             before_intersec_area_list, intersec_area_list, \
@@ -709,5 +723,6 @@ if __name__ == '__main__':
 
 
     if localRank == 0:
-        writer.close()
-    dist.destroy_process_group()
+         writer.close()
+    if worldSize > 1:
+        dist.destroy_process_group()

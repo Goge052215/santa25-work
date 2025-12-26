@@ -1,0 +1,29 @@
+{
+  "configurations": [
+    {
+      "name": "macos",
+      "compilerPath": "/usr/bin/clang++",
+      "intelliSenseMode": "macos-clang-arm64",
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "includePath": [
+        "${workspaceFolder}/external/rmspacing_cpp",
+        "/opt/homebrew/include",
+        "/opt/homebrew/opt/libomp/include",
+        "/Users/goge/.local/lib/python3.11/site-packages/pybind11/include",
+        "/Users/goge/miniconda3/envs/chat/include/python3.11"
+      ],
+      "browse": {
+        "path": [
+          "${workspaceFolder}/external/rmspacing_cpp",
+          "/opt/homebrew/include",
+          "/opt/homebrew/opt/libomp/include",
+          "/Users/goge/.local/lib/python3.11/site-packages/pybind11/include",
+          "/Users/goge/miniconda3/envs/chat/include/python3.11"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    }
+  ],
+  "version": 4
+}

@@ -1,0 +1,22 @@
+/Users/goge/miniconda3/envs/chat/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py:747: UserWarning: Attempted to get default timeout for nccl backend, but NCCL support is not compiled
+  warnings.warn(
+hi
+preparing process group...
+Traceback (most recent call last):
+  File "/Users/goge/santa25/GFPack-Santa25/src/train.py", line 446, in <module>
+    dist.init_process_group("nccl", rank=localRank, world_size=worldSize)
+  File "/Users/goge/miniconda3/envs/chat/lib/python3.11/site-packages/torch/distributed/c10d_logger.py", line 81, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/goge/miniconda3/envs/chat/lib/python3.11/site-packages/torch/distributed/c10d_logger.py", line 95, in wrapper
+    func_return = func(*args, **kwargs)
+                  ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/goge/miniconda3/envs/chat/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py", line 1762, in init_process_group
+    store, rank, world_size = next(rendezvous_iterator)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/goge/miniconda3/envs/chat/lib/python3.11/site-packages/torch/distributed/rendezvous.py", line 274, in _env_rendezvous_handler
+    master_addr = _get_env_or_raise("MASTER_ADDR")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/goge/miniconda3/envs/chat/lib/python3.11/site-packages/torch/distributed/rendezvous.py", line 252, in _get_env_or_raise
+    raise _env_error(env_var)
+ValueError: Error initializing torch.distributed using env:// rendezvous: environment variable MASTER_ADDR expected, but not set

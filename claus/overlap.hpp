@@ -132,7 +132,7 @@ private:
 };
 
 // Convert tree polygon to unit-scale doubles for geometric checks, with optional buffering
-static inline std::vector<DPoint> to_unit_poly_buffered(const ChristmasTree& tree, double buffer = 1e-7) {
+static inline std::vector<DPoint> to_unit_poly_buffered(const ChristmasTree& tree, double buffer = 0.0) {
     std::vector<DPoint> out;
     out.reserve(tree.polygon.size());
     double sf = static_cast<double>(ChristmasTree::scale_factor);
@@ -212,9 +212,9 @@ static inline bool point_in_polygon_strict(const std::vector<DPoint>& poly, cons
 }
 
 // Main overlap check: mirrors validate_overlap.py logic (strict intersection + point-in-poly)
-static inline bool polygons_strict_overlap(const ChristmasTree& A, const ChristmasTree& B) {
-    auto Ad = to_unit_poly_buffered(A);
-    auto Bd = to_unit_poly_buffered(B);
+static inline bool polygons_strict_overlap(const ChristmasTree& A, const ChristmasTree& B, double buffer = 0.0) {
+    auto Ad = to_unit_poly_buffered(A, buffer);
+    auto Bd = to_unit_poly_buffered(B, buffer);
     double eps = 1e-12;
 
     size_t na = Ad.size(), nb = Bd.size();
@@ -243,6 +243,72 @@ static inline bool polygons_strict_overlap(const ChristmasTree& A, const Christm
     return false;
 }
 
+// Approximate overlap area (very expensive if high res, use Monte Carlo for speed)
+static inline double calculate_overlap_area_monte_carlo(const std::vector<ChristmasTree>& trees, int samples_per_tree = 100) {
+    // Monte Carlo approach:
+    // For each tree, generate random points inside its bounding box.
+    // If point is inside the tree AND inside another tree, it counts as overlap.
+    // This is approximate but differentiable-ish for SA.
+    
+    double total_overlap = 0.0;
+    std::mt19937 rng(12345);
+    
+    for (size_t i = 0; i < trees.size(); ++i) {
+        auto box = trees[i].aabb();
+        double min_x = (double)box.first.x / (double)ChristmasTree::scale_factor;
+        double max_x = (double)box.second.x / (double)ChristmasTree::scale_factor;
+        double min_y = (double)box.first.y / (double)ChristmasTree::scale_factor;
+        double max_y = (double)box.second.y / (double)ChristmasTree::scale_factor;
+        
+        double area_box = (max_x - min_x) * (max_y - min_y);
+        if (area_box < 1e-9) continue;
+        
+        std::uniform_real_distribution<double> dx(min_x, max_x);
+        std::uniform_real_distribution<double> dy(min_y, max_y);
+        
+        auto poly_i = to_unit_poly_buffered(trees[i]);
+        int overlap_hits = 0;
+        int inside_hits = 0;
+        
+        for (int k = 0; k < samples_per_tree; ++k) {
+            DPoint p = {dx(rng), dy(rng)};
+            
+            // Check if inside tree i
+            if (point_in_polygon_strict(poly_i, p, 0.0)) {
+                inside_hits++;
+                // Check if inside any other tree
+                bool overlap = false;
+                for (size_t j = 0; j < trees.size(); ++j) {
+                    if (i == j) continue;
+                    // Fast AABB check
+                    auto box_j = trees[j].aabb();
+                    double j_min_x = (double)box_j.first.x / (double)ChristmasTree::scale_factor;
+                    double j_max_x = (double)box_j.second.x / (double)ChristmasTree::scale_factor;
+                    double j_min_y = (double)box_j.first.y / (double)ChristmasTree::scale_factor;
+                    double j_max_y = (double)box_j.second.y / (double)ChristmasTree::scale_factor;
+                    
+                    if (p.x < j_min_x || p.x > j_max_x || p.y < j_min_y || p.y > j_max_y) continue;
+                    
+                    auto poly_j = to_unit_poly_buffered(trees[j]);
+                    if (point_in_polygon_strict(poly_j, p, 0.0)) {
+                        overlap = true;
+                        break;
+                    }
+                }
+                if (overlap) overlap_hits++;
+            }
+        }
+        
+        if (inside_hits > 0) {
+            // Overlap ratio * Tree Area (approx)
+            // Tree area is constant ~0.2. 
+            // Better: (overlap_hits / samples) * box_area
+            total_overlap += (double)overlap_hits / (double)samples_per_tree * area_box;
+        }
+    }
+    return total_overlap; // Double counting? Yes, A-B and B-A. OK for penalty.
+}
+
 static inline bool boxes_overlap(const std::pair<TreePoint, TreePoint>& a, const std::pair<TreePoint, TreePoint>& b) {
     return !(
         a.second.x < b.first.x ||
@@ -252,14 +318,17 @@ static inline bool boxes_overlap(const std::pair<TreePoint, TreePoint>& a, const
     );
 }
 
-static inline bool has_any_overlap(const std::vector<ChristmasTree>& trees) {
+static inline bool has_any_overlap(const std::vector<ChristmasTree>& trees, double buffer = 0.0) {
     size_t n = trees.size();
     if (n == 0) return false;
 
     // Use GPU for large N
+    // GPU currently doesn't support custom buffer! Disable GPU for now to be safe with buffer.
+    /*
     if (n > 50 && GpuContext::getInstance().is_valid()) {
         return GpuContext::getInstance().has_overlap(trees);
     }
+    */
 
     // Calculate bounds for QuadTree
     long double min_x = trees[0].aabb().first.x;
@@ -367,7 +436,7 @@ static inline bool has_any_overlap(const std::vector<ChristmasTree>& trees) {
 
             auto box_b = trees[j].aabb();
             if (boxes_overlap(box_a, box_b)) {
-                 if (polygons_strict_overlap(trees[i], trees[j])) {
+                 if (polygons_strict_overlap(trees[i], trees[j], buffer)) {
                     #pragma omp atomic write
                     found = true;
                 }
@@ -375,6 +444,35 @@ static inline bool has_any_overlap(const std::vector<ChristmasTree>& trees) {
         }
     }
     return found;
+}
+
+static inline long double calculate_moment_of_inertia(const std::vector<ChristmasTree>& trees) {
+    long double sum_sq = 0.0L;
+    for (const auto& t : trees) {
+        sum_sq += (t.center_x * t.center_x + t.center_y * t.center_y);
+    }
+    return sum_sq;
+}
+
+static inline bool has_overlap_with_others(const std::vector<ChristmasTree>& trees, size_t idx) {
+    size_t n = trees.size();
+    if (idx >= n) return false;
+
+    const auto& target = trees[idx];
+    auto box_a = target.aabb();
+
+    // Check against all others
+    for (size_t i = 0; i < n; ++i) {
+        if (i == idx) continue;
+        
+        auto box_b = trees[i].aabb();
+        if (boxes_overlap(box_a, box_b)) {
+            if (polygons_strict_overlap(target, trees[i])) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 static inline long double calculate_score(const std::vector<ChristmasTree>& trees) {

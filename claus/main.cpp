@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <cmath>
 #include <random>
@@ -90,6 +91,101 @@ void deletion_cascade(
             }
             solutions[n - 2].second = new_sol; // update solution for n-1
             side_lengths[n - 1] = best_prev_side;
+        }
+    }
+}
+
+ChristmasTree find_valid_placement(const std::vector<ChristmasTree>& existing, int seed) {
+    std::mt19937 rng(seed);
+    // Determine bounds
+    long double min_x = 100.0L, max_x = -100.0L;
+    long double min_y = 100.0L, max_y = -100.0L;
+    
+    if (existing.empty()) {
+        min_x = -1.0L; max_x = 1.0L;
+        min_y = -1.0L; max_y = 1.0L;
+    } else {
+        auto box = existing[0].aabb();
+        min_x = box.first.x; max_x = box.second.x;
+        min_y = box.first.y; max_y = box.second.y;
+        for (const auto& t : existing) {
+            auto b = t.aabb();
+            min_x = std::min(min_x, b.first.x);
+            max_x = std::max(max_x, b.second.x);
+            min_y = std::min(min_y, b.first.y);
+            max_y = std::max(max_y, b.second.y);
+        }
+    }
+
+    // Expand search area slightly
+    long double pad = 2.0L; 
+    std::uniform_real_distribution<long double> dx(min_x - pad, max_x + pad);
+    std::uniform_real_distribution<long double> dy(min_y - pad, max_y + pad);
+    std::uniform_real_distribution<long double> ddeg(0.0L, 360.0L);
+
+    // Try random placements
+    for (int i = 0; i < 10000; ++i) {
+        ChristmasTree cand(dx(rng), dy(rng), ddeg(rng));
+        
+        // Check bounds
+        if (cand.center_x < -100.0L || cand.center_x > 100.0L ||
+            cand.center_y < -100.0L || cand.center_y > 100.0L) continue;
+
+        // Check overlap with existing
+        bool overlap = false;
+        for (const auto& t : existing) {
+            if (overlap::polygons_strict_overlap(cand, t)) {
+                overlap = true;
+                break;
+            }
+        }
+        if (!overlap) return cand;
+    }
+    
+    // Fallback: Just place it somewhere and hope optimizer fixes it? 
+    // Or return a tree far away?
+    return ChristmasTree(max_x + 2.0L, max_y + 2.0L, 0.0L);
+}
+
+void greedy_insertion(
+    std::vector<std::pair<long double, std::vector<ChristmasTree>>>& solutions,
+    const SAParams& params
+) {
+    #pragma omp parallel for schedule(dynamic)
+    for (int n = 1; n < 200; ++n) {
+        if (solutions[n-1].second.empty()) continue;
+        
+        const auto& current_sol = solutions[n-1].second;
+        
+        // Create candidate for n+1
+        std::vector<ChristmasTree> candidate = current_sol;
+        ChristmasTree new_tree = find_valid_placement(candidate, n * 12345);
+        candidate.push_back(new_tree);
+        
+        // Optimize
+        SAParams local_params = params;
+        local_params.seed = n * 54321;
+        local_params.nsteps = 5000; // Fast optimization
+        local_params.Tmax = 0.2;
+        
+        auto res = ga_optimize(candidate, local_params);
+        auto optimized = std::get<1>(res);
+        optimized = compact_trees(optimized, 500, 0.01);
+        optimized = coordinate_descent_polish(optimized);
+        
+        long double score = get_side_length(optimized);
+        long double existing_score = 1e18L;
+        
+        #pragma omp critical
+        {
+            if (!solutions[n].second.empty()) {
+                existing_score = get_side_length(solutions[n].second);
+            }
+            
+            if (score < existing_score) {
+                solutions[n] = {score, optimized};
+                std::cout << "Greedy Insert Improved N=" << (n+1) << ": " << existing_score << " -> " << score << std::endl;
+            }
         }
     }
 }
@@ -208,103 +304,103 @@ int main() {
     std::vector<std::pair<long double, std::vector<ChristmasTree>>> best_results(201);
     for (int i = 0; i <= 200; ++i) best_results[i].first = 1e18L;
 
-    std::cout << "Running " << tasks.size() << " optimization tasks..." << std::endl;
-
-    #pragma omp parallel for schedule(dynamic)
-    for (size_t i = 0; i < tasks.size(); ++i) {
-        GridState initial_state;
-        {
-            std::mt19937 rng(tasks[i].seed * 101 + 7);
-            std::uniform_real_distribution<long double> dpos(-0.3L, 0.3L);
-            std::uniform_real_distribution<long double> ddeg(-15.0L, 15.0L);
-            initial_state.seed_xs = seed_xs;
-            initial_state.seed_ys = seed_ys;
-            initial_state.seed_degs = seed_degs;
-            for (size_t si = 0; si < initial_state.seed_xs.size(); ++si) {
-                initial_state.seed_xs[si] += dpos(rng);
-                initial_state.seed_ys[si] += dpos(rng);
-                initial_state.seed_degs[si] = std::fmod(initial_state.seed_degs[si] + ddeg(rng), 360.0);
+    // Load existing solutions and refine
+    mkdir("data/solutions", 0755);
+    std::string submission_path = "data/submission.csv";
+    struct stat buffer;
+    if (stat(submission_path.c_str(), &buffer) == 0) {
+        std::cout << "Loading existing submission from " << submission_path << "..." << std::endl;
+        auto loaded = submission::read_csv(submission_path);
+        
+        int loaded_count = 0;
+        for(const auto& l : loaded) if(!l.second.empty()) loaded_count++;
+        std::cout << "Loaded solutions for " << loaded_count << " N values." << std::endl;
+        
+        // Sanity check for overlaps in loaded data
+        int overlap_count = 0;
+        for(int n=1; n<=200; ++n) {
+            if(!loaded[n-1].second.empty()) {
+                if(overlap::has_any_overlap(loaded[n-1].second)) {
+                    overlap_count++;
+                    // std::cout << "N=" << n << " has initial overlap!" << std::endl;
+                }
             }
         }
-        initial_state.a = a_init;
-        initial_state.b = b_init;
-        initial_state.row_phase_x = 0;
-        initial_state.col_phase_y = 0;
-        initial_state.shear_x = 0;
-        initial_state.shear_y = 0;
-        initial_state.parity_row_deg = 0;
-        initial_state.parity_col_deg = 0;
+        std::cout << "Initial Overlaps Detected: " << overlap_count << std::endl;
 
-        SAParams local_params = params;
-        local_params.seed = tasks[i].seed;
-
-        auto result = sa_optimize(
-            initial_state, 
-            tasks[i].config.ncols, 
-            tasks[i].config.nrows, 
-            tasks[i].config.append_x, 
-            tasks[i].config.append_y, 
-            local_params
-        );
-
-        auto refined = refine_grid(
-            std::get<1>(result),
-            tasks[i].config.ncols,
-            tasks[i].config.nrows,
-            tasks[i].config.append_x,
-            tasks[i].config.append_y,
-            local_params
-        );
-
-        long double score = std::get<0>(refined);
-        const auto& trees = std::get<2>(refined);
-        int n_trees = (int)trees.size();
-
-        if (n_trees <= 200) {
-            #pragma omp critical
-            {
-                if (score < best_results[n_trees].first) {
-                    best_results[n_trees] = {score, trees};
-                    // std::cout << "New best for " << n_trees << ": " << score << std::endl;
+        std::cout << "Refining existing solutions..." << std::endl;
+        #pragma omp parallel for schedule(dynamic)
+        for (int n = 1; n <= 200; ++n) {
+            if (!loaded[n-1].second.empty()) {
+                auto trees = loaded[n-1].second;
+                long double score = get_side_length(trees);
+                
+                // Refine
+                SAParams local_params = params;
+                local_params.seed = n * 999;
+                local_params.Tmax = 0.5; // Higher temp for "jiggling"
+                local_params.Tmin = 0.0001;
+                local_params.nsteps = 50000; // Much more steps (fast due to O(N))
+                local_params.nsteps_per_T = 1; 
+                
+                auto refined_res = ga_optimize(trees, local_params);
+                auto refined_trees = std::get<1>(refined_res);
+                
+                // Final hard compaction
+                refined_trees = compact_trees(refined_trees, 2000, 0.01);
+                
+                // Coordinate Descent Polish
+                refined_trees = coordinate_descent_polish(refined_trees);
+                
+                // Iterative Squeeze
+                bool squeeze_success = true;
+                int squeeze_iter = 0;
+                while (squeeze_success && squeeze_iter < 10) { // Limit iterations
+                    // Try to squeeze by 0.5% (iterative)
+                    auto squeezed = squeeze_optimization(refined_trees, 0.005, 10000);
+                    
+                    if (!overlap::has_any_overlap(squeezed)) {
+                        // Successful squeeze
+                        refined_trees = squeezed;
+                        // Polish again
+                        refined_trees = coordinate_descent_polish(refined_trees);
+                        
+                        long double refined_score = get_side_length(refined_trees);
+                        if (refined_score < score) {
+                            trees = refined_trees;
+                            score = refined_score;
+                            #pragma omp critical
+                            {
+                                std::cout << "Squeeze Improved N=" << n << ": " << score << std::endl;
+                                
+                                // Save intermediate result
+                                std::string fname = "data/solutions/" + std::to_string(n) + ".csv";
+                                std::ofstream out(fname);
+                                out << "id,x,y,deg\n";
+                                for(size_t i=0; i<trees.size(); ++i) {
+                                    out << n << "_" << (i+1) << ",s" << trees[i].center_x << ",s" << trees[i].center_y << ",s" << trees[i].angle_deg << "\n";
+                                }
+                                out.close();
+                            }
+                        }
+                        squeeze_iter++;
+                    } else {
+                        squeeze_success = false;
+                    }
+                }
+                
+                #pragma omp critical
+                {
+                    if (score < best_results[n].first) {
+                        best_results[n] = {score, trees};
+                    }
                 }
             }
         }
     }
 
-    // Check if we have a result for 200
-    if (best_results[200].second.empty()) {
-        std::cout << "Running fallback for N=200" << std::endl;
-        GridState initial_state;
-        initial_state.seed_xs = seed_xs;
-        initial_state.seed_ys = seed_ys;
-        initial_state.seed_degs = seed_degs;
-        initial_state.a = a_init;
-        initial_state.b = b_init;
-        initial_state.row_phase_x = 0; initial_state.col_phase_y = 0;
-        initial_state.shear_x = 0; initial_state.shear_y = 0;
-        initial_state.parity_row_deg = 0; initial_state.parity_col_deg = 0;
-
-        auto result = sa_optimize(initial_state, 8, 12, false, true, params);
-        best_results[200] = {std::get<0>(result), std::get<2>(result)};
-    }
-
     // Assemble final solutions
     std::vector<std::pair<long double, std::vector<ChristmasTree>>> solutions(200);
-    const auto& sol200 = best_results[200].second;
-
-    for (int n = 1; n <= 200; ++n) {
-        if (!best_results[n].second.empty()) {
-            solutions[n - 1] = {best_results[n].first, best_results[n].second};
-        } else {
-            // Take first n from sol200
-            std::vector<ChristmasTree> sub(sol200.begin(), sol200.begin() + n);
-            solutions[n - 1] = {0.0L, sub}; // Score recalculated later
-        }
-    }
-
-    // Deletion cascade
-    std::cout << "Running deletion cascade..." << std::endl;
-    deletion_cascade(solutions);
 
     // Final scoring
     long double overall_score = 0.0L;
@@ -312,6 +408,27 @@ int main() {
     final_output.reserve(200);
 
     for (int n = 1; n <= 200; ++n) {
+        if (!best_results[n].second.empty()) {
+            solutions[n - 1] = {best_results[n].first, best_results[n].second};
+        }
+    }
+    
+    // Deletion cascade
+    std::cout << "Running deletion cascade (Pass 1)..." << std::endl;
+    deletion_cascade(solutions);
+
+    // Greedy Insertion (Bottom-Up)
+    std::cout << "Running greedy insertion (Bottom-Up)..." << std::endl;
+    greedy_insertion(solutions, params);
+
+    // Deletion cascade (Pass 2)
+    std::cout << "Running deletion cascade (Pass 2)..." << std::endl;
+    deletion_cascade(solutions);
+
+    for (int n = 1; n <= 200; ++n) {
+        if (solutions[n-1].second.empty()) {
+             // Shouldn't happen if we loaded 200 solutions
+        }
         long double s = get_side_length(solutions[n - 1].second);
         overall_score += (s * s) / n;
         final_output.push_back({s, solutions[n - 1].second});

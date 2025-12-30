@@ -42,4 +42,43 @@ static inline void write_csv(const std::vector<std::pair<long double, std::vecto
     }
 }
 
+static inline std::vector<std::pair<long double, std::vector<ChristmasTree>>> read_csv(const std::string& path) {
+    std::vector<std::pair<long double, std::vector<ChristmasTree>>> solutions(200);
+    std::ifstream in(path);
+    std::string line;
+    std::getline(in, line); // Skip header
+
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        std::stringstream ss(line);
+        std::string segment;
+        std::vector<std::string> parts;
+        while (std::getline(ss, segment, ',')) {
+            parts.push_back(segment);
+        }
+        if (parts.size() < 4) continue;
+
+        // id: NNN_idx
+        std::string id = parts[0];
+        size_t us = id.find('_');
+        int n = std::stoi(id.substr(0, us));
+        int idx = std::stoi(id.substr(us + 1));
+
+        // x, y, deg: sVALUE
+        long double x = std::stold(parts[1].substr(1));
+        long double y = std::stold(parts[2].substr(1));
+        long double deg = std::stold(parts[3].substr(1));
+
+        if (n >= 1 && n <= 200) {
+            if (solutions[n-1].second.empty()) {
+                solutions[n-1].second.resize(n);
+            }
+            if (idx < n) {
+                solutions[n-1].second[idx] = ChristmasTree(x, y, deg);
+            }
+        }
+    }
+    return solutions;
+}
+
 } // namespace submission

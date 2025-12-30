@@ -211,6 +211,521 @@ inline std::tuple<long double, GridState, std::vector<ChristmasTree>> sa_optimiz
     return {best_score, best, best_trees};
 }
 
+inline std::tuple<long double, std::vector<ChristmasTree>> sa_optimize_individual(
+    const std::vector<ChristmasTree>& initial_trees,
+    const SAParams& params
+) {
+    std::mt19937 rng(params.seed);
+    std::uniform_real_distribution<double> dist01(0.0, 1.0);
+    
+    // Work in-place on current_trees to avoid copying vector every step
+    std::vector<ChristmasTree> current_trees = initial_trees;
+    std::vector<ChristmasTree> best_trees = current_trees;
+    
+    long double current_main_score = overlap::calculate_score(current_trees);
+    long double current_secondary_score = overlap::calculate_moment_of_inertia(current_trees);
+    
+    // Weight for secondary score. 
+    // Side^2 is around 60-100. Moment is around 10000.
+    // We want secondary to be a tie-breaker, not driver.
+    // Let's say we want 1.0 improvement in main score to be worth 1000 improvement in secondary.
+    double lambda = 1e-4; 
+    
+    long double current_total_score = current_main_score + lambda * current_secondary_score;
+    long double best_total_score = current_total_score;
+    long double best_main_score = current_main_score;
+
+    double T = params.Tmax;
+    double Tfactor = -std::log(params.Tmax / params.Tmin);
+    int total_steps = static_cast<int>(params.nsteps);
+    int steps_per_T = static_cast<int>(params.nsteps_per_T);
+    int n_trees = (int)current_trees.size();
+
+    for (int step = 0; step < total_steps; ++step) {
+        for (int k = 0; k < steps_per_T; ++k) {
+            // Pick a move type: 0 = Perturb, 1 = Compress
+            int move_type = (dist01(rng) < 0.05) ? 1 : 0; // 5% chance to compress
+            
+            if (move_type == 1) {
+                 // Compression Move: Scale everything down slightly
+                 double scale = 1.0 - (params.position_delta * 0.1); // Small shrinkage
+                 std::vector<ChristmasTree> backup = current_trees;
+                 bool possible = true;
+                 
+                 for(auto& t : current_trees) {
+                     t.center_x *= scale;
+                     t.center_y *= scale;
+                     t.angle_deg = t.angle_deg; // Rotation invariant
+                     t = ChristmasTree(t.center_x, t.center_y, t.angle_deg);
+                 }
+                 
+                 if (overlap::has_any_overlap(current_trees)) {
+                     current_trees = backup;
+                     possible = false;
+                 }
+                 
+                 if (possible) {
+                     long double new_main = overlap::calculate_score(current_trees);
+                     long double new_sec = overlap::calculate_moment_of_inertia(current_trees);
+                     long double new_total = new_main + lambda * new_sec;
+                     
+                     // Always accept compression if valid? Yes, it reduces objective.
+                     current_main_score = new_main;
+                     current_secondary_score = new_sec;
+                     current_total_score = new_total;
+                     
+                     if (current_main_score < best_main_score) {
+                         best_main_score = current_main_score;
+                         best_total_score = current_total_score;
+                         best_trees = current_trees;
+                     }
+                 }
+            } else {
+                // Perturbation Move
+                int idx = std::uniform_int_distribution<int>(0, n_trees - 1)(rng);
+                ChristmasTree old_tree = current_trees[idx];
+
+                double dx = (dist01(rng) * 2.0 - 1.0) * params.position_delta;
+                double dy = (dist01(rng) * 2.0 - 1.0) * params.position_delta;
+                double ddeg = (dist01(rng) * 2.0 - 1.0) * params.angle_delta;
+                
+                current_trees[idx].center_x += dx;
+                current_trees[idx].center_y += dy;
+                current_trees[idx].angle_deg = std::fmod(current_trees[idx].angle_deg + ddeg, 360.0);
+                
+                current_trees[idx] = ChristmasTree(current_trees[idx].center_x, current_trees[idx].center_y, current_trees[idx].angle_deg);
+                
+                bool valid = true;
+                if (current_trees[idx].center_x < -100.0L || current_trees[idx].center_x > 100.0L ||
+                    current_trees[idx].center_y < -100.0L || current_trees[idx].center_y > 100.0L) {
+                    valid = false;
+                } else {
+                    if (overlap::has_overlap_with_others(current_trees, idx)) {
+                        valid = false;
+                    }
+                }
+
+                if (!valid) {
+                    current_trees[idx] = old_tree;
+                    continue;
+                }
+
+                long double new_main = overlap::calculate_score(current_trees);
+                long double new_sec = overlap::calculate_moment_of_inertia(current_trees);
+                long double new_total = new_main + lambda * new_sec;
+                
+                double delta = static_cast<double>(new_total - current_total_score);
+
+                bool accept = false;
+                if (delta < 0) {
+                    accept = true;
+                } else if (T > 1e-10) {
+                    if (dist01(rng) < std::exp(-delta / T)) {
+                        accept = true;
+                    }
+                }
+
+                if (accept) {
+                    current_main_score = new_main;
+                    current_secondary_score = new_sec;
+                    current_total_score = new_total;
+                    
+                    if (current_main_score < best_main_score) {
+                        best_main_score = current_main_score;
+                        best_total_score = current_total_score;
+                        best_trees = current_trees;
+                    }
+                } else {
+                    current_trees[idx] = old_tree;
+                }
+            }
+        }
+        T = params.Tmax * std::exp(Tfactor * (step + 1) / params.nsteps);
+    }
+    
+    // std::cout << "SA Finished. Best Main: " << best_main_score << " Initial: " << overlap::calculate_score(initial_trees) << std::endl;
+    return {best_main_score, best_trees};
+}
+
+inline std::vector<ChristmasTree> coordinate_descent_polish(std::vector<ChristmasTree> trees) {
+    long double current_score = overlap::calculate_score(trees);
+    bool improved = true;
+    double step_size = 0.1;
+    
+    // Iteratively refine with decreasing step size
+    while (step_size > 1e-6) {
+        improved = false;
+        // Try to move each tree in 4 directions + rotation
+        for (size_t i = 0; i < trees.size(); ++i) {
+            ChristmasTree original = trees[i];
+            
+            // Candidates: dx+, dx-, dy+, dy-, rot+, rot-
+            struct Move { double dx; double dy; double ddeg; };
+            std::vector<Move> moves = {
+                {step_size, 0, 0}, {-step_size, 0, 0},
+                {0, step_size, 0}, {0, -step_size, 0},
+                {0, 0, step_size * 10.0}, {0, 0, -step_size * 10.0} // Rotation scale
+            };
+            
+            for (const auto& m : moves) {
+                trees[i].center_x += m.dx;
+                trees[i].center_y += m.dy;
+                trees[i].angle_deg = std::fmod(trees[i].angle_deg + m.ddeg, 360.0);
+                trees[i] = ChristmasTree(trees[i].center_x, trees[i].center_y, trees[i].angle_deg);
+                
+                bool valid = true;
+                if (trees[i].center_x < -100.0L || trees[i].center_x > 100.0L ||
+                    trees[i].center_y < -100.0L || trees[i].center_y > 100.0L) {
+                    valid = false;
+                } else if (overlap::has_overlap_with_others(trees, i)) {
+                    valid = false;
+                }
+                
+                if (valid) {
+                    long double new_score = overlap::calculate_score(trees);
+                    if (new_score < current_score) {
+                        current_score = new_score;
+                        improved = true;
+                        // Keep the change and continue to next tree/move
+                        // Greedily accept first improvement or best? 
+                        // Greedy first is faster.
+                        original = trees[i]; // Update baseline for next moves
+                    } else {
+                        // Revert
+                        trees[i] = original;
+                    }
+                } else {
+                    // Revert
+                    trees[i] = original;
+                }
+            }
+        }
+        
+        // If no improvement at this resolution, shrink step
+        if (!improved) {
+            step_size *= 0.5;
+        }
+    }
+    return trees;
+}
+
+inline std::vector<ChristmasTree> compact_trees(std::vector<ChristmasTree> trees, int steps = 200, double initial_step = 0.01) {
+    double step_size = initial_step;
+    std::mt19937 rng(123);
+    std::uniform_real_distribution<double> djitter(-1.0, 1.0);
+
+    for (int s = 0; s < steps; ++s) {
+        bool any_moved = false;
+        // Shuffle order
+        std::vector<int> indices(trees.size());
+        std::iota(indices.begin(), indices.end(), 0);
+        std::shuffle(indices.begin(), indices.end(), rng);
+
+        for (int i : indices) {
+            ChristmasTree original = trees[i];
+            
+            // Vector to center
+            double dx = -trees[i].center_x;
+            double dy = -trees[i].center_y;
+            double len = std::sqrt(dx*dx + dy*dy);
+            if (len < 1e-9) continue;
+            
+            dx /= len;
+            dy /= len;
+            
+            // Add slight jitter to direction to avoid getting stuck
+            if (s % 10 == 0) {
+                dx += djitter(rng) * 0.5;
+                dy += djitter(rng) * 0.5;
+                double nlen = std::sqrt(dx*dx + dy*dy);
+                dx /= nlen; dy /= nlen;
+            }
+
+            trees[i].center_x += dx * step_size;
+            trees[i].center_y += dy * step_size;
+            trees[i] = ChristmasTree(trees[i].center_x, trees[i].center_y, trees[i].angle_deg);
+            
+            if (overlap::has_overlap_with_others(trees, i)) {
+                trees[i] = original; // Revert
+            } else {
+                any_moved = true;
+            }
+        }
+        
+        // Adaptive step size
+        if (!any_moved) {
+            step_size *= 0.5;
+            if (step_size < 1e-6) break;
+        } else if (s % 50 == 0) {
+             // Occasionally reset step size to try larger jumps again?
+             // Or just keep it.
+        }
+    }
+    return trees;
+}
+
+// Soft Constraint Optimization: Shrink box, allow overlap, minimize overlap
+inline std::vector<ChristmasTree> squeeze_optimization(std::vector<ChristmasTree> trees, double shrink_factor = 0.02, int steps = 5000) {
+    // 1. Shrink
+    double scale = 1.0 - shrink_factor;
+    for(auto& t : trees) {
+        t.center_x *= scale;
+        t.center_y *= scale;
+        t = ChristmasTree(t.center_x, t.center_y, t.angle_deg);
+    }
+    
+    // 2. Resolve Overlaps via SA
+    SAParams params;
+    params.nsteps = steps;
+    params.Tmax = 10.0; // High temp to cross barriers
+    params.Tmin = 0.01;
+    params.seed = 12345;
+    params.position_delta = 0.1;
+    params.angle_delta = 5.0;
+    
+    std::mt19937 rng(params.seed);
+    std::uniform_real_distribution<double> dist01(0.0, 1.0);
+    
+    // Initial cost: Overlap Area
+    // Monte Carlo is too slow for 5000 steps. 
+    // Use Proxy: Number of overlapping pairs? Or Penetration Depth approximation?
+    // Let's use Number of Overlapping Pairs + Distance to Center
+    
+    // Actually, simple SA with "Count Overlaps" objective is often enough to find a valid config if density permits.
+    // Cost = OverlapPairs * 1000 + Repulsion (to guide separation)
+    
+    // Helper for fast triangle overlap (SAT)
+    auto is_triangle_overlap = [](const ChristmasTree& t1, const ChristmasTree& t2) {
+        auto get_tri = [](const ChristmasTree& t) {
+            double rad = t.angle_deg * 3.14159265358979323846 / 180.0;
+            double c = std::cos(rad);
+            double s = std::sin(rad);
+            // Triangle approximation of the tree
+            double pts[3][2] = {{-0.35, 0.0}, {0.35, 0.0}, {0.0, 0.8}};
+            std::vector<std::pair<double, double>> out(3);
+            for(int k=0; k<3; ++k) {
+                out[k].first = t.center_x + pts[k][0]*c - pts[k][1]*s;
+                out[k].second = t.center_y + pts[k][0]*s + pts[k][1]*c;
+            }
+            return out;
+        };
+        auto tri1 = get_tri(t1);
+        auto tri2 = get_tri(t2);
+        
+        std::vector<std::pair<double,double>> axes;
+        for(int i=0; i<3; ++i) {
+            double dx = tri1[(i+1)%3].first - tri1[i].first;
+            double dy = tri1[(i+1)%3].second - tri1[i].second;
+            axes.push_back({-dy, dx});
+            dx = tri2[(i+1)%3].first - tri2[i].first;
+            dy = tri2[(i+1)%3].second - tri2[i].second;
+            axes.push_back({-dy, dx});
+        }
+        
+        for(const auto& axis : axes) {
+            double min1 = 1e18, max1 = -1e18;
+            double min2 = 1e18, max2 = -1e18;
+            for(const auto& p : tri1) {
+                double val = p.first * axis.first + p.second * axis.second;
+                if(val < min1) min1 = val;
+                if(val > max1) max1 = val;
+            }
+            for(const auto& p : tri2) {
+                double val = p.first * axis.first + p.second * axis.second;
+                if(val < min2) min2 = val;
+                if(val > max2) max2 = val;
+            }
+            if(max1 < min2 || max2 < min1) return false;
+        }
+        return true;
+    };
+
+    auto calc_cost = [&](const std::vector<ChristmasTree>& t) {
+        double overlaps = 0.0;
+        double repulsion = 0.0;
+        
+        // Only check triangle overlap for speed (approximation)
+        // Check only i < j to avoid double counting and speed up
+        int n = (int)t.size();
+        for(int i=0; i<n; ++i) {
+            for(int j=i+1; j<n; ++j) {
+                // AABB Check (Manual for speed)
+                // Tree is roughly unit size, so dist > 2 is safe
+                double dx = t[i].center_x - t[j].center_x;
+                double dy = t[i].center_y - t[j].center_y;
+                double d2 = dx*dx + dy*dy;
+                
+                if (d2 < 4.0) {
+                     // Repulsion
+                     double dist = std::sqrt(d2);
+                     if (dist < 1.0) repulsion += (1.0 - dist);
+                     
+                     // Strict(ish) Overlap
+                     if (is_triangle_overlap(t[i], t[j])) {
+                         overlaps += 1.0;
+                     }
+                }
+            }
+        }
+        return overlaps * 1000.0 + repulsion;
+    };
+    
+    double current_cost = calc_cost(trees);
+    double best_cost = current_cost;
+    std::vector<ChristmasTree> best_trees = trees;
+    
+    double T = params.Tmax;
+    double Tfactor = -std::log(params.Tmax / params.Tmin);
+    
+    for(int s=0; s<steps; ++s) {
+        if (current_cost == 0) break; // Solved!
+        
+        int idx = std::uniform_int_distribution<int>(0, trees.size()-1)(rng);
+        ChristmasTree old_tree = trees[idx];
+        
+        // Perturb
+        double dx = (dist01(rng)*2.0-1.0) * params.position_delta;
+        double dy = (dist01(rng)*2.0-1.0) * params.position_delta;
+        double ddeg = (dist01(rng)*2.0-1.0) * params.angle_delta;
+        
+        trees[idx].center_x += dx;
+        trees[idx].center_y += dy;
+        trees[idx].angle_deg = std::fmod(trees[idx].angle_deg + ddeg, 360.0);
+        trees[idx] = ChristmasTree(trees[idx].center_x, trees[idx].center_y, trees[idx].angle_deg);
+        
+        // Check bounds
+        if (trees[idx].center_x < -100 || trees[idx].center_x > 100 || 
+            trees[idx].center_y < -100 || trees[idx].center_y > 100) {
+            trees[idx] = old_tree;
+            continue;
+        }
+        
+        double new_cost = calc_cost(trees);
+        double delta = new_cost - current_cost;
+        
+        if (delta < 0 || dist01(rng) < std::exp(-delta/T)) {
+            current_cost = new_cost;
+            if (current_cost < best_cost) {
+                best_cost = current_cost;
+                best_trees = trees;
+            }
+        } else {
+            trees[idx] = old_tree;
+        }
+        
+        T = params.Tmax * std::exp(Tfactor * (s+1) / params.nsteps);
+    }
+    
+    // Return best found. If best_cost == 0, we successfully squeezed.
+    // If best_cost > 0, we failed to resolve, caller should probably discard or try less shrink.
+    return best_trees;
+}
+
+inline std::tuple<long double, std::vector<ChristmasTree>> ga_optimize(
+    const std::vector<ChristmasTree>& initial_trees,
+    const SAParams& params
+) {
+    int population_size = 6; 
+    int generations = 10;
+    
+    std::mt19937 rng(params.seed);
+    std::uniform_real_distribution<double> dist01(0.0, 1.0);
+    
+    // Initialize Population
+    // Pop[0] is the input
+    // Pop[1..N] are mutated versions
+    std::vector<std::vector<ChristmasTree>> population;
+    population.reserve(population_size);
+    population.push_back(initial_trees);
+    
+    // Add 1 very compressed version
+    std::vector<ChristmasTree> compressed = compact_trees(initial_trees, 500, 0.05);
+    population.push_back(compressed);
+
+    // Add 1 slightly perturbed version
+    SAParams p_perturb = params;
+    p_perturb.nsteps = 1000;
+    p_perturb.Tmax = 1.0; 
+    auto res_p = sa_optimize_individual(initial_trees, p_perturb);
+    population.push_back(std::get<1>(res_p));
+
+    // Fill rest with more aggressive mutations of initial
+    while(population.size() < population_size) {
+        SAParams init_params = params;
+        init_params.nsteps = 2000; 
+        init_params.Tmax = 2.0; // Very hot
+        init_params.seed = params.seed + (int)population.size() * 100;
+        auto res = sa_optimize_individual(initial_trees, init_params);
+        population.push_back(std::get<1>(res));
+    }
+    
+    std::vector<ChristmasTree> global_best_trees = initial_trees;
+    long double global_best_score = overlap::calculate_score(global_best_trees);
+    
+    for (int gen = 0; gen < generations; ++gen) {
+        // 1. Evaluate
+        std::vector<std::pair<long double, int>> scores;
+        for (int i = 0; i < population_size; ++i) {
+            long double s = overlap::calculate_score(population[i]);
+            scores.push_back({s, i});
+            if (s < global_best_score) {
+                global_best_score = s;
+                global_best_trees = population[i];
+            }
+        }
+        std::sort(scores.begin(), scores.end()); // Ascending (minimize)
+        
+        // Elitism: Keep best 2
+        std::vector<std::vector<ChristmasTree>> next_pop;
+        next_pop.push_back(population[scores[0].second]);
+        next_pop.push_back(population[scores[1].second]);
+        
+        // 2. Crossover & Mutation
+        while (next_pop.size() < population_size) {
+            // Tournament Selection
+            int p1_idx = scores[std::uniform_int_distribution<int>(0, population_size/2)(rng)].second;
+            int p2_idx = scores[std::uniform_int_distribution<int>(0, population_size/2)(rng)].second;
+            
+            const auto& p1 = population[p1_idx];
+            const auto& p2 = population[p2_idx];
+            std::vector<ChristmasTree> child = p1;
+            
+            // Uniform Crossover
+            for (size_t t = 0; t < child.size(); ++t) {
+                if (dist01(rng) < 0.5) {
+                    // Try taking from P2
+                    ChristmasTree backup = child[t];
+                    child[t] = p2[t];
+                    // If creates overlap with CURRENT child state, revert
+                    if (overlap::has_overlap_with_others(child, t)) {
+                        child[t] = backup;
+                        // If backup also overlaps (because other trees changed), try to perturb?
+                        if (overlap::has_overlap_with_others(child, t)) {
+                            // Try a small jiggle
+                             child[t].center_x += (dist01(rng)*2.0-1.0)*0.1;
+                             child[t].center_y += (dist01(rng)*2.0-1.0)*0.1;
+                             child[t] = ChristmasTree(child[t].center_x, child[t].center_y, child[t].angle_deg);
+                             if (overlap::has_overlap_with_others(child, t)) {
+                                 child[t] = backup; // Give up
+                             }
+                        }
+                    }
+                }
+            }
+            
+            // Mutation (SA)
+            SAParams mut_params = params;
+            mut_params.nsteps = params.nsteps / generations; // Distribute budget
+            mut_params.seed = params.seed + gen * 100 + (int)next_pop.size();
+            auto res = sa_optimize_individual(child, mut_params);
+            next_pop.push_back(std::get<1>(res));
+        }
+        population = next_pop;
+    }
+    
+    return {global_best_score, global_best_trees};
+}
+
 inline std::tuple<long double, GridState, std::vector<ChristmasTree>> refine_grid(
     const GridState& state,
     int ncols, int nrows,

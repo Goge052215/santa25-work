@@ -3,7 +3,7 @@
 #include <cmath>
 #include <algorithm>
 
-struct Point {
+struct TreePoint {
     long double x;
     long double y;
 };
@@ -14,7 +14,7 @@ public:
     long double center_x;
     long double center_y;
     long double angle_deg;
-    std::vector<Point> polygon;
+    std::vector<TreePoint> polygon;
 
     ChristmasTree(long double cx = 0.0L, long double cy = 0.0L, long double angle = 0.0L)
         : center_x(cx), center_y(cy), angle_deg(angle) {
@@ -23,7 +23,7 @@ public:
         polygon = translate(r, center_x * scale_factor, center_y * scale_factor);
     }
 
-    std::pair<Point, Point> aabb() const {
+    std::pair<TreePoint, TreePoint> aabb() const {
         if (polygon.empty()) return {{0, 0}, {0, 0}};
         long double min_x = polygon[0].x;
         long double min_y = polygon[0].y;
@@ -39,12 +39,19 @@ public:
         return {{min_x, min_y}, {max_x, max_y}};
     }
 
+    ChristmasTree(const std::vector<TreePoint>& p, long double cx, long double cy, long double angle)
+        : center_x(cx), center_y(cy), angle_deg(angle), polygon(p) {}
+
+    static std::vector<TreePoint> get_initial_polygon() {
+        return initial_polygon();
+    }
+
 private:
-    static std::vector<Point> rotate(const std::vector<Point>& poly, long double angle_deg) {
+    static std::vector<TreePoint> rotate(const std::vector<TreePoint>& poly, long double angle_deg) {
         long double rad = angle_deg * (acosl(-1.0L) / 180.0L);
         long double c = std::cos(rad);
         long double s = std::sin(rad);
-        std::vector<Point> out;
+        std::vector<TreePoint> out;
         out.reserve(poly.size());
         for (const auto& pt : poly) {
             long double x = pt.x * c - pt.y * s;
@@ -54,8 +61,8 @@ private:
         return out;
     }
 
-    static std::vector<Point> translate(const std::vector<Point>& poly, long double xoff, long double yoff) {
-        std::vector<Point> out;
+    static std::vector<TreePoint> translate(const std::vector<TreePoint>& poly, long double xoff, long double yoff) {
+        std::vector<TreePoint> out;
         out.reserve(poly.size());
         for (const auto& pt : poly) {
             out.push_back({pt.x + xoff, pt.y + yoff});
@@ -63,7 +70,7 @@ private:
         return out;
     }
 
-    static std::vector<Point> initial_polygon() {
+    static std::vector<TreePoint> initial_polygon() {
         long double trunk_w = 0.15L;
         long double trunk_h = 0.2L;
         long double base_w = 0.7L;
@@ -77,7 +84,7 @@ private:
 
         auto sf = scale_factor;
         // Vertices ordered to form the polygon
-        std::vector<Point> pts = {
+        std::vector<TreePoint> pts = {
             {0.0L * sf, tip_y * sf},
             {(top_w / 2.0L) * sf, tier_1_y * sf},
             {(top_w / 4.0L) * sf, tier_1_y * sf},

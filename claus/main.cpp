@@ -356,8 +356,12 @@ int main() {
                 bool squeeze_success = true;
                 int squeeze_iter = 0;
                 while (squeeze_success && squeeze_iter < 10) { // Limit iterations
-                    // Try to squeeze by 0.5% (iterative)
-                    auto squeezed = squeeze_optimization(refined_trees, 0.005, 10000);
+                    // Anneal the squeeze factor
+                    double factor = 0.005; // Base 0.5%
+                    if (squeeze_iter > 2) factor = 0.002; // Reduce to 0.2%
+                    if (squeeze_iter > 5) factor = 0.001; // Reduce to 0.1%
+
+                    auto squeezed = squeeze_optimization(refined_trees, factor, 15000);
                     
                     if (!overlap::has_any_overlap(squeezed)) {
                         // Successful squeeze

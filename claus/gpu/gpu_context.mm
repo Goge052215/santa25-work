@@ -22,14 +22,14 @@ public:
     id<MTLCommandQueue> commandQueue;
     id<MTLComputePipelineState> pipelineState;
     id<MTLComputePipelineState> pipelineStateShared;
-    id<MTLComputePipelineState> pipelineStatePhysics; // New physics kernel
+    id<MTLComputePipelineState> pipelineStatePhysics; 
+    id<MTLComputePipelineState> pipelineStateSA; // New SA kernel
     bool valid;
     
     // Cached resources to avoid reallocation
     id<MTLBuffer> cachedTreeBuffer;
-    id<MTLBuffer> cachedTreeBufferOut; // Double buffering
+    id<MTLBuffer> cachedTreeBufferOut; 
     id<MTLBuffer> cachedResultBuffer;
-    id<MTLBuffer> cachedBufferValBuffer; 
     NSUInteger cachedTreeCapacity;
 
     GpuContextImpl() : valid(false), cachedTreeCapacity(0) {
@@ -42,7 +42,6 @@ public:
         
         NSError* error = nil;
         
-        // Try to load library from common locations
         NSString* possiblePaths[] = {
             @"claus/gpu/gpu_overlap.metallib",
             @"gpu/gpu_overlap.metallib",
@@ -66,67 +65,51 @@ public:
         }
 
         id<MTLFunction> kernel = [library newFunctionWithName:@"check_overlaps"];
-        if (!kernel) {
+        if (kernel) {
+             pipelineState = [device newComputePipelineStateWithFunction:kernel error:&error];
+        } else {
              std::cerr << "Failed to find kernel 'check_overlaps'" << std::endl;
              return;
-        }
-        
-        pipelineState = [device newComputePipelineStateWithFunction:kernel error:&error];
-        if (!pipelineState) {
-            std::cerr << "Failed to create pipeline state: " << [[error localizedDescription] UTF8String] << std::endl;
-            return;
         }
 
         id<MTLFunction> kernelShared = [library newFunctionWithName:@"check_overlaps_shared"];
         if (kernelShared) {
             pipelineStateShared = [device newComputePipelineStateWithFunction:kernelShared error:&error];
-        } else {
-             std::cerr << "Warning: 'check_overlaps_shared' kernel not found." << std::endl;
         }
         
         id<MTLFunction> kernelPhysics = [library newFunctionWithName:@"physics_step"];
         if (kernelPhysics) {
             pipelineStatePhysics = [device newComputePipelineStateWithFunction:kernelPhysics error:&error];
-            if (!pipelineStatePhysics) {
-                std::cerr << "Failed to create physics pipeline state: " << [[error localizedDescription] UTF8String] << std::endl;
-            }
+        }
+
+        id<MTLFunction> kernelSA = [library newFunctionWithName:@"batch_sa_optimize"];
+        if (kernelSA) {
+            pipelineStateSA = [device newComputePipelineStateWithFunction:kernelSA error:&error];
         } else {
-             std::cerr << "Warning: 'physics_step' kernel not found." << std::endl;
+             std::cerr << "Warning: 'batch_sa_optimize' kernel not found." << std::endl;
         }
         
         valid = true;
     }
     
     bool compute(const std::vector<ChristmasTree>& trees, float buffer_val) {
-        if (!valid) return false;
+        if (!valid || !pipelineState) return false;
         @autoreleasepool {
             size_t n = trees.size();
             if (n < 2) return false;
             
-            // Decide which kernel to use
             bool useShared = (pipelineStateShared != nil && n <= 240);
-
             NSUInteger dataSize = n * sizeof(TreeData);
             
-            // Resize buffers if needed
             if (n > cachedTreeCapacity || cachedTreeBuffer == nil) {
-                cachedTreeCapacity = n * 2; // Growth factor
-                if (cachedTreeCapacity < 256) cachedTreeCapacity = 256; // Min size
+                cachedTreeCapacity = n * 2;
+                if (cachedTreeCapacity < 256) cachedTreeCapacity = 256;
                 
-                cachedTreeBuffer = [
-                    device newBufferWithLength:cachedTreeCapacity * 
-                    sizeof(TreeData) options:MTLResourceStorageModeShared
-                ];
-                cachedTreeBufferOut = [
-                    device newBufferWithLength:cachedTreeCapacity * 
-                    sizeof(TreeData) options:MTLResourceStorageModeShared
-                ];
-                cachedResultBuffer = [
-                    device newBufferWithLength:sizeof(int) options:MTLResourceStorageModeShared
-                ];
+                cachedTreeBuffer = [device newBufferWithLength:cachedTreeCapacity * sizeof(TreeData) options:MTLResourceStorageModeShared];
+                cachedTreeBufferOut = [device newBufferWithLength:cachedTreeCapacity * sizeof(TreeData) options:MTLResourceStorageModeShared];
+                cachedResultBuffer = [device newBufferWithLength:sizeof(int) options:MTLResourceStorageModeShared];
             }
             
-            // Copy data to shared buffer
             std::vector<TreeData> data(n);
             for (size_t i = 0; i < n; ++i) {
                 data[i].x = (float)trees[i].center_x;
@@ -135,7 +118,6 @@ public:
             }
             memcpy(cachedTreeBuffer.contents, data.data(), dataSize);
             
-            // Reset result
             int initialResult = 0;
             memcpy(cachedResultBuffer.contents, &initialResult, sizeof(int));
 
@@ -168,7 +150,6 @@ public:
                 [encoder setBytes:&buffer_val length:sizeof(float) atIndex:3];
                 
                 MTLSize gridSize = MTLSizeMake(n, n, 1);
-                
                 NSUInteger w = pipelineState.maxTotalThreadsPerThreadgroup;
                 if (w > n) w = n;
                 NSUInteger w_dim = (NSUInteger)sqrt(w);
@@ -194,17 +175,13 @@ public:
             if (n < 2) return trees;
             
             NSUInteger dataSize = n * sizeof(TreeData);
-            
-            // Resize buffers
             if (n > cachedTreeCapacity || cachedTreeBuffer == nil) {
                 cachedTreeCapacity = n * 2;
                 if (cachedTreeCapacity < 256) cachedTreeCapacity = 256;
-                
                 cachedTreeBuffer = [device newBufferWithLength:cachedTreeCapacity * sizeof(TreeData) options:MTLResourceStorageModeShared];
                 cachedTreeBufferOut = [device newBufferWithLength:cachedTreeCapacity * sizeof(TreeData) options:MTLResourceStorageModeShared];
             }
             
-            // Upload
             std::vector<TreeData> data(n);
             for (size_t i = 0; i < n; ++i) {
                 data[i].x = (float)trees[i].center_x;
@@ -213,7 +190,6 @@ public:
             }
             memcpy(cachedTreeBuffer.contents, data.data(), dataSize);
             
-            // Parameters
             PhysicsParams params;
             params.repulsion_strength = 1.0f;
             params.gravity_strength = 0.001f;
@@ -243,12 +219,12 @@ public:
                 
                 [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
                 
-                // Swap
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
                 id<MTLBuffer> tmp = bufferIn;
                 bufferIn = bufferOut;
                 bufferOut = tmp;
                 
-                // Decay
                 params.learning_rate *= decay;
             }
             
@@ -261,10 +237,102 @@ public:
             for (size_t i = 0; i < n; ++i) {
                 result[i].center_x = resultData[i].x;
                 result[i].center_y = resultData[i].y;
-                // Angle is constant in this physics model
+            }
+            return result;
+        }
+    }
+    
+    std::vector<std::vector<ChristmasTree>> batch_sa_optimize(
+        const std::vector<std::vector<ChristmasTree>>& solutions,
+        const SAParamsGPU& params
+    ) {
+        if (!valid || !pipelineStateSA) return solutions;
+        @autoreleasepool {
+            // Flatten solutions
+            std::vector<TreeData> all_trees;
+            std::vector<int> offsets;
+            std::vector<int> sizes;
+            std::vector<uint> seeds;
+            
+            int current_offset = 0;
+            int group_count = 0;
+            
+            for(size_t i=0; i<solutions.size(); ++i) {
+                if (solutions[i].empty()) continue;
+                
+                int sz = (int)solutions[i].size();
+                offsets.push_back(current_offset);
+                sizes.push_back(sz);
+                seeds.push_back(12345 + (uint)i * 100);
+                group_count++;
+                
+                for(const auto& t : solutions[i]) {
+                    TreeData d;
+                    d.x = (float)t.center_x;
+                    d.y = (float)t.center_y;
+                    d.angle = (float)t.angle_deg;
+                    all_trees.push_back(d);
+                }
+                current_offset += sz;
             }
             
-            return result;
+            if (all_trees.empty()) return solutions;
+            
+            NSUInteger totalTrees = all_trees.size();
+            
+            id<MTLBuffer> treesBufferIn = [device newBufferWithBytes:all_trees.data() length:totalTrees * sizeof(TreeData) options:MTLResourceStorageModeShared];
+            id<MTLBuffer> treesBufferOut = [device newBufferWithLength:totalTrees * sizeof(TreeData) options:MTLResourceStorageModeShared];
+            id<MTLBuffer> offsetsBuffer = [device newBufferWithBytes:offsets.data() length:offsets.size() * sizeof(int) options:MTLResourceStorageModeShared];
+            id<MTLBuffer> sizesBuffer = [device newBufferWithBytes:sizes.data() length:sizes.size() * sizeof(int) options:MTLResourceStorageModeShared];
+            id<MTLBuffer> seedsBuffer = [device newBufferWithBytes:seeds.data() length:seeds.size() * sizeof(uint) options:MTLResourceStorageModeShared];
+            
+            id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+            [encoder setComputePipelineState:pipelineStateSA];
+            
+            [encoder setBuffer:treesBufferIn offset:0 atIndex:0];
+            [encoder setBuffer:treesBufferOut offset:0 atIndex:1];
+            [encoder setBuffer:offsetsBuffer offset:0 atIndex:2];
+            [encoder setBuffer:sizesBuffer offset:0 atIndex:3];
+            [encoder setBytes:&params length:sizeof(SAParamsGPU) atIndex:4];
+            [encoder setBuffer:seedsBuffer offset:0 atIndex:5];
+            
+            // Dispatch one threadgroup per system
+            // Threadgroup size must be >= max N (200). Use 256.
+            MTLSize threadgroupSize = MTLSizeMake(256, 1, 1);
+            MTLSize gridSize = MTLSizeMake(group_count * 256, 1, 1); // Grid size is total threads
+            
+            // Wait, dispatchThreads vs dispatchThreadgroups
+            // [encoder dispatchThreadgroups:numGroups threadsPerThreadgroup:threadgroupSize];
+            // Metal compute uses grids.
+            // If I use dispatchThreadgroups:
+            MTLSize groups = MTLSizeMake(group_count, 1, 1);
+            [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threadgroupSize];
+            
+            [encoder endEncoding];
+            [commandBuffer commit];
+            [commandBuffer waitUntilCompleted];
+            
+            // Read back
+            TreeData* resData = (TreeData*)treesBufferOut.contents;
+            std::vector<std::vector<ChristmasTree>> new_solutions = solutions;
+            
+            int sol_idx = 0;
+            for(size_t i=0; i<solutions.size(); ++i) {
+                if (solutions[i].empty()) continue;
+                int sz = sizes[sol_idx];
+                int off = offsets[sol_idx];
+                
+                for(int k=0; k<sz; ++k) {
+                    TreeData d = resData[off + k];
+                    new_solutions[i][k].center_x = d.x;
+                    new_solutions[i][k].center_y = d.y;
+                    new_solutions[i][k].angle_deg = d.angle;
+                }
+                sol_idx++;
+            }
+            
+            return new_solutions;
         }
     }
 };
@@ -296,6 +364,17 @@ std::vector<ChristmasTree> GpuContext::physics_polish(const std::vector<Christma
         return p->physics_polish(trees, steps, initial_lr);
     }
     return trees;
+}
+
+std::vector<std::vector<ChristmasTree>> GpuContext::batch_sa_optimize(
+    const std::vector<std::vector<ChristmasTree>>& solutions,
+    const SAParamsGPU& params
+) {
+    GpuContextImpl* p = (GpuContextImpl*)impl;
+    if (p->valid) {
+        return p->batch_sa_optimize(solutions, params);
+    }
+    return solutions;
 }
 
 bool GpuContext::is_valid() {

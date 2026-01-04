@@ -2,12 +2,29 @@
 #include <vector>
 #include "../tree.hpp"
 
+struct SAParamsGPU {
+    float Tmax;
+    float Tmin;
+    float cooling_factor;
+    int nsteps;
+    float position_delta;
+    float angle_delta;
+};
+
 class GpuContext {
 public:
     static GpuContext& getInstance();
     bool is_valid();
     bool has_overlap(const std::vector<ChristmasTree>& trees, double buffer = 0.0);
     std::vector<ChristmasTree> physics_polish(const std::vector<ChristmasTree>& trees, int steps = 1000, double initial_lr = 0.01);
+    
+    // Batch SA optimization
+    // Input: Vector of solutions (each solution is a vector of trees)
+    // Returns: Optimized solutions
+    std::vector<std::vector<ChristmasTree>> batch_sa_optimize(
+        const std::vector<std::vector<ChristmasTree>>& solutions,
+        const SAParamsGPU& params
+    );
 
 private:
     GpuContext();

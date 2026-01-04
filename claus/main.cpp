@@ -318,8 +318,41 @@ int main() {
     }
     */
     
+    // Assemble solutions for GPU
+    std::vector<std::vector<ChristmasTree>> current_solutions;
+    for(int n=1; n<=200; ++n) {
+        if (best_results[n].second.empty()) current_solutions.push_back({});
+        else current_solutions.push_back(best_results[n].second);
+    }
+    
+    // Run GPU Batch Optimization
+    if (GpuContext::getInstance().is_valid()) {
+        std::cout << "Running GPU Batch Optimization..." << std::endl;
+        SAParamsGPU gpu_params;
+        gpu_params.Tmax = 2.0f;
+        gpu_params.Tmin = 0.01f;
+        gpu_params.nsteps = 100000; // 100k steps per system
+        gpu_params.cooling_factor = exp(log(gpu_params.Tmin/gpu_params.Tmax) / gpu_params.nsteps);
+        gpu_params.position_delta = 0.05f;
+        gpu_params.angle_delta = 2.0f;
+        
+        auto optimized = GpuContext::getInstance().batch_sa_optimize(current_solutions, gpu_params);
+        
+        // Update results
+        for(int n=1; n<=200; ++n) {
+             if (optimized[n-1].empty()) continue;
+             
+             // Check if improved (CPU check for precision)
+             long double score = get_side_length(optimized[n-1]);
+             if (score < best_results[n].first) {
+                 best_results[n] = {score, optimized[n-1]};
+                 std::cout << "GPU Improved N=" << n << ": " << score << std::endl;
+             }
+        }
+    }
+
     // Refine existing solutions logic (simplified for integration)
-    std::cout << "Refining existing solutions..." << std::endl;
+    std::cout << "Refining existing solutions (CPU Polish)..." << std::endl;
     #pragma omp parallel for schedule(dynamic)
     for (int n = 1; n <= 200; ++n) {
         if (!best_results[n].second.empty()) {
@@ -337,12 +370,12 @@ int main() {
 
             long double score = get_side_length(trees);
             
-            // Refine
+            // Refine (Reduced steps since GPU did heavy lifting)
             SAParams local_params = params;
             local_params.seed = n * 999;
-            local_params.Tmax = 2.0; 
+            local_params.Tmax = 0.5; // Lower temp for polish
             local_params.Tmin = 1e-6;
-            local_params.nsteps = 200000; 
+            local_params.nsteps = 20000; // Reduced from 200k
             local_params.nsteps_per_T = 1; 
             
             auto refined_res = ga_optimize(trees, local_params);

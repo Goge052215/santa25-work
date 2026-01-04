@@ -52,23 +52,15 @@ Point sub(Point a, Point b) {
 }
 
 bool segments_strict_intersect(Point p1, Point p2, Point q1, Point q2) {
-    float eps = 1e-12; // Tighter epsilon to match CPU logic as closely as possible
+    float eps = 1e-12;
     Point r = sub(p2, p1);
     Point s = sub(q2, q1);
     float d = cross_prod(r, s);
-    float o1 = cross_prod(sub(p2, p1), sub(q1, p1));
-    float o2 = cross_prod(sub(p2, p1), sub(q2, p1));
-
+    
+    // We don't need o1, o2 for strict intersect logic if we use t, u
+    
     if (abs(d) < eps) {
-        if (abs(o1) > eps || abs(o2) > eps) return false;
-        float rr = r.x * r.x + r.y * r.y;
-        if (rr < eps) return false;
-        float t0 = ((q1.x - p1.x) * r.x + (q1.y - p1.y) * r.y) / rr;
-        float t1 = ((q2.x - p1.x) * r.x + (q2.y - p1.y) * r.y) / rr;
-        float smin = min(t0, t1);
-        float smax = max(t0, t1);
-        float overlap_len = min(1.0f, smax) - max(0.0f, smin);
-        return overlap_len > eps;
+        return false;
     }
 
     float t = cross_prod(sub(q1, p1), s) / d;
@@ -77,54 +69,65 @@ bool segments_strict_intersect(Point p1, Point p2, Point q1, Point q2) {
 }
 
 bool point_in_polygon(Point p, Point poly[15]) {
-    int wn = 0;
+    bool inside = false;
     float eps = 1e-12;
     for (int i = 0; i < 15; ++i) {
         Point a = poly[i];
         Point b = poly[(i + 1) % 15];
         
-        // On segment check
+        // On segment check (boundary is not strictly inside)
         if (abs(cross_prod(sub(b, a), sub(p, a))) <= eps) {
             float minx = min(a.x, b.x) - eps;
             float maxx = max(a.x, b.x) + eps;
             float miny = min(a.y, b.y) - eps;
             float maxy = max(a.y, b.y) + eps;
-            if (p.x >= minx && p.x <= maxx && p.y >= miny && p.y <= maxy) return false; // On boundary is not strictly inside
+            if (p.x >= minx && p.x <= maxx && p.y >= miny && p.y <= maxy) return false;
         }
         
-        bool cond = ((a.y <= p.y) && (b.y > p.y)) || ((a.y > p.y) && (b.y <= p.y));
-        if (cond) {
-            float x_intersect = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
-            if (x_intersect > p.x) wn += (b.y > a.y) ? 1 : -1;
+        // Ray casting with epsilon shift to match CPU/Python logic
+        float py_adj = p.y + eps;
+        if ((a.y > py_adj) != (b.y > py_adj)) {
+            float x_intersect = (b.x - a.x) * (py_adj - a.y) / (b.y - a.y) + a.x;
+            if (p.x < x_intersect - eps) {
+                inside = !inside;
+            }
         }
     }
-    return wn != 0;
+    return inside;
 }
 
 kernel void check_overlaps(
     device const TreeData* trees [[ buffer(0) ]],
     device atomic_int* result [[ buffer(1) ]],
-    constant float& buffer_val [[ buffer(2) ]],
-    uint2 id [[ thread_position_in_grid ]],
-    uint2 size [[ threads_per_grid ]]
+    constant int& n_trees [[ buffer(2) ]],
+    constant float& buffer_size [[ buffer(3) ]],
+    uint2 id [[ thread_position_in_grid ]]
 ) {
-    // We map 2D grid to pairs?
-    // Let's assume 1D grid for simplicity: index i
-    // Or 2D grid (i, j)
-    
-    uint i = id.x;
-    uint j = id.y;
-    
-    if (i >= j) return; // Only check upper triangle
-    // We need to pass N? Assuming size covers it.
-    
-    // Check if result is already found
     if (atomic_load_explicit(result, memory_order_relaxed) > 0) return;
+
+    int n = n_trees;
+    int i = id.x;
+    int j = id.y;
+
+    if (i >= n || j >= n) return;
+    if (i >= j) return; // Only check upper triangle
 
     TreeData t1 = trees[i];
     TreeData t2 = trees[j];
+    
+    // Check for identical pose
+    float dx = t1.x - t2.x;
+    float dy = t1.y - t2.y;
+    float dist_sq = dx*dx + dy*dy;
+    float da = abs(t1.angle - t2.angle);
+    // Normalize angle diff roughly (assuming 0-360 range inputs, but to be safe)
+    // For GPU, simple check is enough if optimizer is stacking them
+    if (dist_sq < 1e-8f && da < 1e-3f) {
+         atomic_store_explicit(result, 1, memory_order_relaxed);
+         return;
+    }
 
-    float scale = 1.0 + buffer_val;
+    float scale = 1.0 + buffer_size;
 
     // Bounding box check first
     // Need to compute transformed vertices to get BB
@@ -134,7 +137,7 @@ kernel void check_overlaps(
     Point poly2[15];
     
     // Transform Tree 1
-    float rad1 = t1.angle * 3.14159265 / 180.0;
+    float rad1 = t1.angle * 3.14159265358979323846f / 180.0f;
     float c1 = cos(rad1);
     float s1 = sin(rad1);
     
@@ -152,7 +155,7 @@ kernel void check_overlaps(
     }
     
     // Transform Tree 2
-    float rad2 = t2.angle * 3.14159265 / 180.0;
+    float rad2 = t2.angle * 3.14159265358979323846f / 180.0f;
     float c2 = cos(rad2);
     float s2 = sin(rad2);
     
@@ -260,9 +263,20 @@ kernel void check_overlaps_shared(
     float my_min_y = shared_polys[tid].min_y;
     float my_max_x = shared_polys[tid].max_x;
     float my_max_y = shared_polys[tid].max_y;
+    float my_angle = trees[tid].angle;
     
     // Loop
     for (uint j = tid + 1; j < block_size; ++j) {
+        // Identical pose check
+        float dx = trees[tid].x - trees[j].x;
+        float dy = trees[tid].y - trees[j].y;
+        float dist_sq = dx*dx + dy*dy;
+        float da = abs(my_angle - trees[j].angle);
+        if (dist_sq < 1e-8f && da < 1e-3f) {
+             atomic_store_explicit(result, 1, memory_order_relaxed);
+             return;
+        }
+
         // AABB Check
         float other_min_x = shared_polys[j].min_x;
         float other_min_y = shared_polys[j].min_y;
@@ -333,7 +347,7 @@ kernel void check_overlaps_shared(
             for (int i = 0; i < 15; ++i) {
                 Point a = shared_polys[j].points[i];
                 Point b = shared_polys[j].points[(i + 1) % 15];
-                 if (abs(cross_prod(sub(b, a), sub(p, a))) <= eps) {
+                if (abs(cross_prod(sub(b, a), sub(p, a))) <= eps) {
                      float mx = min(a.x, b.x) - eps;
                      float Mx = max(a.x, b.x) + eps;
                      float my = min(a.y, b.y) - eps;

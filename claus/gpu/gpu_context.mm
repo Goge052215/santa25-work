@@ -115,6 +115,7 @@ public:
         // Copy data to shared buffer
         // Prepare data vector
         std::vector<TreeData> data(n);
+        // long double sf = ChristmasTree::scale_factor; // Not needed, we use unit coords
         for (size_t i = 0; i < n; ++i) {
             data[i].x = (float)trees[i].center_x;
             data[i].y = (float)trees[i].center_y;
@@ -153,7 +154,9 @@ public:
             [encoder setComputePipelineState:pipelineState];
             [encoder setBuffer:cachedTreeBuffer offset:0 atIndex:0];
             [encoder setBuffer:cachedResultBuffer offset:0 atIndex:1];
-            [encoder setBytes:&buffer_val length:sizeof(float) atIndex:2];
+            int n_val = (int)n;
+            [encoder setBytes:&n_val length:sizeof(int) atIndex:2];
+            [encoder setBytes:&buffer_val length:sizeof(float) atIndex:3];
             
             MTLSize gridSize = MTLSizeMake(n, n, 1);
             

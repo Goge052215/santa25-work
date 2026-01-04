@@ -449,12 +449,12 @@ int main() {
     deletion_cascade(solutions);
 
     // Greedy Insertion (Bottom-Up)
-    std::cout << "Running greedy insertion (Bottom-Up)..." << std::endl;
+    // std::cout << "Running greedy insertion (Bottom-Up)..." << std::endl;
     // Increase params for greedy insertion
-    SAParams greedy_params = params;
-    greedy_params.nsteps = 10000;
-    greedy_params.Tmax = 0.5;
-    greedy_insertion(solutions, greedy_params);
+    // SAParams greedy_params = params;
+    // greedy_params.nsteps = 10000;
+    // greedy_params.Tmax = 0.5;
+    // greedy_insertion(solutions, greedy_params);
 
     // Deletion cascade (Pass 2)
     std::cout << "Running deletion cascade (Pass 2)..." << std::endl;

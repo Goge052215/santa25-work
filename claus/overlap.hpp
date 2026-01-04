@@ -1,7 +1,10 @@
 #pragma once
 #include <vector>
+#include <array>
 #include <cmath>
 #include <algorithm>
+#include <numeric>
+#include <random>
 #include <omp.h>
 #include "tree.hpp"
 #include "gpu/gpu_context.hpp"
@@ -9,147 +12,29 @@
 namespace overlap {
 
 struct DPoint {
-    double x;
-    double y;
-};
-
-struct QuadTreeNode {
-    double x_min, y_min, x_max, y_max;
-    std::vector<int> indices;
-    QuadTreeNode* children[4];
-    bool is_leaf;
-
-    QuadTreeNode(double x0, double y0, double x1, double y1)
-        : x_min(x0), y_min(y0), x_max(x1), y_max(y1), is_leaf(true) {
-        children[0] = children[1] = children[2] = children[3] = nullptr;
-    }
-
-    ~QuadTreeNode() {
-        for (int i = 0; i < 4; ++i) delete children[i];
-    }
-};
-
-class QuadTree {
-public:
-    QuadTree(double x_min, double y_min, double x_max, double y_max, int capacity = 8, int max_depth = 6)
-        : root(new QuadTreeNode(x_min, y_min, x_max, y_max)), capacity(capacity), max_depth(max_depth) {}
-
-    ~QuadTree() { delete root; }
-
-    void insert(int index, double min_x, double min_y, double max_x, double max_y) {
-        insert_recursive(root, index, min_x, min_y, max_x, max_y, 0);
-    }
-
-    void query(double min_x, double min_y, double max_x, double max_y, std::vector<int>& result) {
-        query_recursive(root, min_x, min_y, max_x, max_y, result);
-    }
-
-private:
-    QuadTreeNode* root;
-    int capacity;
-    int max_depth;
-
-    void insert_recursive(QuadTreeNode* node, int index, double min_x, double min_y, double max_x, double max_y, int depth) {
-        if (!rect_overlap(node->x_min, node->y_min, node->x_max, node->y_max, min_x, min_y, max_x, max_y)) {
-            return;
-        }
-
-        if (node->is_leaf) {
-            if (node->indices.size() < capacity || depth >= max_depth) {
-                node->indices.push_back(index);
-            } else {
-                split(node);
-                insert_recursive(node, index, min_x, min_y, max_x, max_y, depth); // Re-insert current item into children
-            }
-        } else {
-            for (int i = 0; i < 4; ++i) {
-                insert_recursive(node->children[i], index, min_x, min_y, max_x, max_y, depth + 1);
-            }
-        }
-    }
-
-    void split(QuadTreeNode* node) {
-        double mid_x = (node->x_min + node->x_max) / 2.0;
-        double mid_y = (node->y_min + node->y_max) / 2.0;
-
-        node->children[0] = new QuadTreeNode(node->x_min, node->y_min, mid_x, mid_y);     // BL
-        node->children[1] = new QuadTreeNode(mid_x, node->y_min, node->x_max, mid_y);     // BR
-        node->children[2] = new QuadTreeNode(node->x_min, mid_y, mid_x, node->y_max);     // TL
-        node->children[3] = new QuadTreeNode(mid_x, mid_y, node->x_max, node->y_max);     // TR
-
-        node->is_leaf = false;
-        
-        // Distribute existing indices
-        for (int idx : node->indices) {
-            // We don't have the bounds of existing indices here easily unless we store them or pass them.
-            // Simplified: In this specific use case, we might need to store bounds with indices or look them up.
-            // However, for strict correctness without storing bounds in node, we'd need to re-fetch from source.
-            // BUT: Since this is an embedded class, we can't easily access the external 'trees' vector here.
-            // WORKAROUND: Just push to all children? No, that defeats the purpose.
-            // BETTER: Change insert signature or store bounds.
-            // Given constraints, let's just stick to leaf nodes for small N or fix this logic.
-            // Let's assume we pass a "get_bounds" callback or similar? Too complex.
-            // Simplest: The split logic is tricky without bounds.
-            // Alternative: Don't split existing indices, just mark as branch and push future ones? 
-            // No, that leaves indices at non-leaf nodes.
-            // HYBRID: Indices can exist at ANY node. If we split, we move them down IF we know their bounds.
-            // If we don't know bounds, we keep them here?
-            // Let's change the QuadTree to be able to access bounds or store them.
-            // Actually, let's keep it simple: Just push to `indices` vector. 
-            // If it exceeds capacity, we split. But we can't move old indices down without their bounds.
-            // So we will just keep old indices at this level and only push NEW indices down.
-            // This is a valid Quadtree variant (Relaxed Quadtree).
-        }
-        // Clear indices from this node to avoid duplication if we moved them. 
-        // But since we didn't move them, we keep them here.
-        // Wait, if we keep them here, we must check them during query.
-    }
-    
-    // Correct split logic requires bounds. Let's simplify:
-    // We will just NOT move old indices. They stay at the node where they were inserted.
-    // New indices will go deeper.
-    // Query checks current node's indices AND children.
-
-    bool rect_overlap(double x1, double y1, double x2, double y2, double ax, double ay, double bx, double by) {
-        return !(x1 > bx || x2 < ax || y1 > by || y2 < ay);
-    }
-
-    void query_recursive(QuadTreeNode* node, double min_x, double min_y, double max_x, double max_y, std::vector<int>& result) {
-        if (!rect_overlap(node->x_min, node->y_min, node->x_max, node->y_max, min_x, min_y, max_x, max_y)) {
-            return;
-        }
-
-        for (int idx : node->indices) {
-            result.push_back(idx);
-        }
-
-        if (!node->is_leaf) {
-            for (int i = 0; i < 4; ++i) {
-                query_recursive(node->children[i], min_x, min_y, max_x, max_y, result);
-            }
-        }
-    }
+    long double x;
+    long double y;
 };
 
 // Convert tree polygon to unit-scale doubles for geometric checks, with optional buffering
-static inline std::vector<DPoint> to_unit_poly_buffered(const ChristmasTree& tree, double buffer = 0.0) {
-    std::vector<DPoint> out;
-    out.reserve(tree.polygon.size());
-    double sf = static_cast<double>(ChristmasTree::scale_factor);
-    double cx = static_cast<double>(tree.center_x);
-    double cy = static_cast<double>(tree.center_y);
-    double scale = 1.0 + buffer;
+static inline std::array<DPoint, 15> to_unit_poly_buffered(const ChristmasTree& tree, double buffer = 0.0) {
+    std::array<DPoint, 15> out;
+    long double sf = ChristmasTree::scale_factor;
+    long double cx = tree.center_x;
+    long double cy = tree.center_y;
+    long double scale = 1.0 + buffer;
 
-    for (const auto& p : tree.polygon) {
-        double px = static_cast<double>(p.x) / sf;
-        double py = static_cast<double>(p.y) / sf;
+    for (size_t i = 0; i < 15; ++i) {
+        const auto& p = tree.polygon[i];
+        long double px = static_cast<long double>(p.x) / sf;
+        long double py = static_cast<long double>(p.y) / sf;
         // Expand relative to center
-        out.push_back({cx + (px - cx) * scale, cy + (py - cy) * scale});
+        out[i] = {cx + (px - cx) * scale, cy + (py - cy) * scale};
     }
     return out;
 }
 
-static inline double cross(const DPoint& a, const DPoint& b) {
+static inline long double cross(const DPoint& a, const DPoint& b) {
     return a.x * b.y - a.y * b.x;
 }
 
@@ -158,53 +43,53 @@ static inline DPoint sub(const DPoint& a, const DPoint& b) {
 }
 
 // Check if point p lies on segment ab (with epsilon tolerance)
-static inline bool on_segment(const DPoint& a, const DPoint& b, const DPoint& p, double eps) {
-    double minx = std::min(a.x, b.x) - eps;
-    double maxx = std::max(a.x, b.x) + eps;
-    double miny = std::min(a.y, b.y) - eps;
-    double maxy = std::max(a.y, b.y) + eps;
-    double c = std::fabs(cross(sub(b, a), sub(p, a)));
+static inline bool on_segment(const DPoint& a, const DPoint& b, const DPoint& p, long double eps) {
+    long double minx = std::min(a.x, b.x) - eps;
+    long double maxx = std::max(a.x, b.x) + eps;
+    long double miny = std::min(a.y, b.y) - eps;
+    long double maxy = std::max(a.y, b.y) + eps;
+    long double c = std::abs(cross(sub(b, a), sub(p, a)));
     return c <= eps && p.x >= minx && p.x <= maxx && p.y >= miny && p.y <= maxy;
 }
 
 // Strict segment intersection: returns true only if segments cross strictly (excluding endpoints)
-static inline bool segments_strict_intersect(const DPoint& p1, const DPoint& p2, const DPoint& q1, const DPoint& q2, double eps) {
+static inline bool segments_strict_intersect(const DPoint& p1, const DPoint& p2, const DPoint& q1, const DPoint& q2, long double eps) {
     DPoint r = sub(p2, p1);
     DPoint s = sub(q2, q1);
-    double d = cross(r, s);
-    double o1 = cross(sub(p2, p1), sub(q1, p1));
-    double o2 = cross(sub(p2, p1), sub(q2, p1));
+    long double d = cross(r, s);
+    long double o1 = cross(sub(p2, p1), sub(q1, p1));
+    long double o2 = cross(sub(p2, p1), sub(q2, p1));
 
-    if (std::fabs(d) < eps) {
-        if (std::fabs(o1) > eps || std::fabs(o2) > eps) return false;
-        double rr = r.x * r.x + r.y * r.y;
+    if (std::abs(d) < eps) {
+        if (std::abs(o1) > eps || std::abs(o2) > eps) return false;
+        long double rr = r.x * r.x + r.y * r.y;
         if (rr < eps) return false;
-        double t0 = ((q1.x - p1.x) * r.x + (q1.y - p1.y) * r.y) / rr;
-        double t1 = ((q2.x - p1.x) * r.x + (q2.y - p1.y) * r.y) / rr;
-        double smin = std::min(t0, t1);
-        double smax = std::max(t0, t1);
-        double overlap_len = std::min(1.0, smax) - std::max(0.0, smin);
+        long double t0 = ((q1.x - p1.x) * r.x + (q1.y - p1.y) * r.y) / rr;
+        long double t1 = ((q2.x - p1.x) * r.x + (q2.y - p1.y) * r.y) / rr;
+        long double smin = std::min(t0, t1);
+        long double smax = std::max(t0, t1);
+        long double overlap_len = std::min(1.0L, smax) - std::max(0.0L, smin);
         return overlap_len > eps;
     }
 
-    double t = cross(sub(q1, p1), s) / d;
-    double u = cross(sub(q1, p1), r) / d;
-    return t > eps && t < 1.0 - eps && u > eps && u < 1.0 - eps;
+    long double t = cross(sub(q1, p1), s) / d;
+    long double u = cross(sub(q1, p1), r) / d;
+    return t > eps && t < 1.0L - eps && u > eps && u < 1.0L - eps;
 }
 
 // Strict point-in-polygon: returns true if point is strictly inside
-static inline bool point_in_polygon_strict(const std::vector<DPoint>& poly, const DPoint& p, double eps) {
+template<size_t N>
+static inline bool point_in_polygon_strict(const std::array<DPoint, N>& poly, const DPoint& p, long double eps) {
     int wn = 0;
-    size_t n = poly.size();
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < N; ++i) {
         const DPoint& a = poly[i];
-        const DPoint& b = poly[(i + 1) % n];
+        const DPoint& b = poly[(i + 1) % N];
         // If on boundary, not strictly inside
         if (on_segment(a, b, p, eps)) return false;
         
         bool cond = ((a.y <= p.y) && (b.y > p.y)) || ((a.y > p.y) && (b.y <= p.y));
         if (cond) {
-            double x_intersect = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
+            long double x_intersect = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
             if (x_intersect > p.x) wn += (b.y > a.y) ? 1 : -1;
         }
     }
@@ -215,9 +100,10 @@ static inline bool point_in_polygon_strict(const std::vector<DPoint>& poly, cons
 static inline bool polygons_strict_overlap(const ChristmasTree& A, const ChristmasTree& B, double buffer = 0.0) {
     auto Ad = to_unit_poly_buffered(A, buffer);
     auto Bd = to_unit_poly_buffered(B, buffer);
-    double eps = 1e-12;
+    // Use epsilon 1e-12 as requested (relaxed from 1e-14)
+    long double eps = 1e-12L; 
 
-    size_t na = Ad.size(), nb = Bd.size();
+    size_t na = 15, nb = 15;
     
     // 1. Check strict edge intersections
     for (size_t i = 0; i < na; ++i) {
@@ -318,128 +204,278 @@ static inline bool boxes_overlap(const std::pair<TreePoint, TreePoint>& a, const
     );
 }
 
+// R-Tree like structure for overlap detection
+struct Box {
+    double min_x, min_y, max_x, max_y;
+    
+    bool overlaps(const Box& other) const {
+        return !(
+            max_x < other.min_x || 
+            min_x > other.max_x || 
+            max_y < other.min_y || 
+            min_y > other.max_y
+        );
+    }
+    
+    void expand(const Box& other) {
+        min_x = std::min(min_x, other.min_x);
+        min_y = std::min(min_y, other.min_y);
+        max_x = std::max(max_x, other.max_x);
+        max_y = std::max(max_y, other.max_y);
+    }
+    
+    double area() const {
+        return (max_x - min_x) * (max_y - min_y);
+    }
+};
+
+struct RTreeNode {
+    Box box;
+    std::vector<std::pair<int, Box>> items; // ID + Box (for leaf)
+    std::vector<RTreeNode*> children;       // Children (for internal)
+    bool is_leaf;
+    int height;
+
+    RTreeNode() : is_leaf(true), height(0) {
+        box = {1e18, 1e18, -1e18, -1e18};
+    }
+    
+    ~RTreeNode() {
+        for(auto c : children) delete c;
+    }
+};
+
+class RTree {
+public:
+    RTree(const std::vector<ChristmasTree>& trees, int max_leaf_size = 8) : max_leaf_size(max_leaf_size) {
+        // Bulk loading (STR-like)
+        std::vector<int> indices(trees.size());
+        std::iota(indices.begin(), indices.end(), 0);
+        if (indices.empty()) {
+            root = new RTreeNode();
+            return;
+        }
+        root = build_recursive(trees, indices);
+    }
+    
+    ~RTree() { delete root; }
+    
+    void query(const ChristmasTree& target, std::vector<int>& result) const {
+        auto t_box = target.aabb();
+        double sf = static_cast<double>(ChristmasTree::scale_factor);
+        Box q_box;
+        q_box.min_x = static_cast<double>(t_box.first.x) / sf;
+        q_box.min_y = static_cast<double>(t_box.first.y) / sf;
+        q_box.max_x = static_cast<double>(t_box.second.x) / sf;
+        q_box.max_y = static_cast<double>(t_box.second.y) / sf;
+        
+        query_recursive(root, q_box, result);
+    }
+
+    // Dynamic update support
+    void insert(int id, const ChristmasTree& tree) {
+        auto t_box = tree.aabb();
+        double sf = static_cast<double>(ChristmasTree::scale_factor);
+        Box box;
+        box.min_x = static_cast<double>(t_box.first.x) / sf;
+        box.min_y = static_cast<double>(t_box.first.y) / sf;
+        box.max_x = static_cast<double>(t_box.second.x) / sf;
+        box.max_y = static_cast<double>(t_box.second.y) / sf;
+        
+        insert_recursive(root, id, box);
+    }
+    
+    void remove(int id, const ChristmasTree& tree) {
+        // We need the box to find it efficiently
+        auto t_box = tree.aabb();
+        double sf = static_cast<double>(ChristmasTree::scale_factor);
+        Box box;
+        box.min_x = static_cast<double>(t_box.first.x) / sf;
+        box.min_y = static_cast<double>(t_box.first.y) / sf;
+        box.max_x = static_cast<double>(t_box.second.x) / sf;
+        box.max_y = static_cast<double>(t_box.second.y) / sf;
+        
+        remove_recursive(root, id, box);
+    }
+
+private:
+    RTreeNode* root;
+    int max_leaf_size;
+    
+    RTreeNode* build_recursive(const std::vector<ChristmasTree>& trees, std::vector<int>& indices) {
+        RTreeNode* node = new RTreeNode();
+        
+        // Compute MBR of all items and store items
+        for(int idx : indices) {
+            auto t_box = trees[idx].aabb();
+            double sf = static_cast<double>(ChristmasTree::scale_factor);
+            Box item_box;
+            item_box.min_x = static_cast<double>(t_box.first.x) / sf;
+            item_box.min_y = static_cast<double>(t_box.first.y) / sf;
+            item_box.max_x = static_cast<double>(t_box.second.x) / sf;
+            item_box.max_y = static_cast<double>(t_box.second.y) / sf;
+            
+            node->box.expand(item_box);
+            
+            if (indices.size() <= (size_t)max_leaf_size) {
+                node->items.push_back({idx, item_box});
+            }
+        }
+        
+        if (indices.size() <= (size_t)max_leaf_size) {
+            node->is_leaf = true;
+            node->height = 0;
+            return node;
+        }
+        
+        node->is_leaf = false;
+        // Sort by x center
+        std::sort(indices.begin(), indices.end(), [&](int a, int b) {
+            return trees[a].center_x < trees[b].center_x;
+        });
+        
+        int n_slices = std::ceil(std::sqrt((double)indices.size() / max_leaf_size));
+        int slice_size = indices.size() / n_slices;
+        if (slice_size < 1) slice_size = 1;
+
+        for(int i=0; i<n_slices; ++i) {
+            int start = i * slice_size;
+            int end = (i == n_slices - 1) ? indices.size() : (i + 1) * slice_size;
+            if (start >= indices.size()) break;
+            std::vector<int> slice(indices.begin() + start, indices.begin() + end);
+            
+            // Sort slice by y center
+            std::sort(slice.begin(), slice.end(), [&](int a, int b) {
+                return trees[a].center_y < trees[b].center_y;
+            });
+            
+            int n_children = std::ceil((double)slice.size() / max_leaf_size);
+            int child_size = slice.size() / n_children;
+            if (child_size < 1) child_size = 1;
+            
+            for(int j=0; j<n_children; ++j) {
+                int c_start = j * child_size;
+                int c_end = (j == n_children - 1) ? slice.size() : (j + 1) * child_size;
+                if (c_start >= slice.size()) break;
+                
+                std::vector<int> child_indices(slice.begin() + c_start, slice.begin() + c_end);
+                if(child_indices.empty()) continue;
+                
+                RTreeNode* child = build_recursive(trees, child_indices);
+                node->children.push_back(child);
+                node->box.expand(child->box);
+                node->height = std::max(node->height, child->height + 1);
+            }
+        }
+        return node;
+    }
+    
+    void query_recursive(const RTreeNode* node, const Box& q_box, std::vector<int>& result) const {
+        if (!node->box.overlaps(q_box)) return;
+        
+        if (node->is_leaf) {
+            for(const auto& item : node->items) {
+                if (item.second.overlaps(q_box)) {
+                    result.push_back(item.first);
+                }
+            }
+        } else {
+            for(auto c : node->children) {
+                query_recursive(c, q_box, result);
+            }
+        }
+    }
+
+    void insert_recursive(RTreeNode* node, int id, const Box& box) {
+        node->box.expand(box);
+        if (node->is_leaf) {
+            node->items.push_back({id, box});
+            if (node->items.size() > (size_t)max_leaf_size * 2) { // Allow some overflow or split
+                 // Splitting not implemented for dynamic yet, just allow growth for simple SA
+                 // or implement simple split.
+                 // For now, allow growth. Performance degrades but correctness holds.
+            }
+        } else {
+            // Choose best child
+            RTreeNode* best_child = nullptr;
+            double min_expansion = 1e18;
+            for(auto c : node->children) {
+                // Calculate expansion needed
+                Box new_box = c->box;
+                new_box.expand(box);
+                double expansion = new_box.area() - c->box.area();
+                if (expansion < min_expansion) {
+                    min_expansion = expansion;
+                    best_child = c;
+                }
+            }
+            if (best_child) insert_recursive(best_child, id, box);
+            else { 
+                // Should not happen if built correctly, but if node has no children?
+                // Create one?
+            }
+        }
+    }
+    
+    bool remove_recursive(RTreeNode* node, int id, const Box& box) {
+        if (!node->box.overlaps(box)) return false;
+        
+        if (node->is_leaf) {
+            for(auto it = node->items.begin(); it != node->items.end(); ++it) {
+                if (it->first == id) {
+                    node->items.erase(it);
+                    // Recompute MBR
+                    node->box = {1e18, 1e18, -1e18, -1e18};
+                    for(const auto& item : node->items) node->box.expand(item.second);
+                    return true;
+                }
+            }
+        } else {
+            for(auto c : node->children) {
+                if (remove_recursive(c, id, box)) {
+                    // Recompute MBR
+                    node->box = {1e18, 1e18, -1e18, -1e18};
+                    for(auto child : node->children) node->box.expand(child->box);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+};
+
 static inline bool has_any_overlap(const std::vector<ChristmasTree>& trees, double buffer = 0.0) {
     size_t n = trees.size();
     if (n == 0) return false;
 
     // Use GPU for large N
-    // GPU currently doesn't support custom buffer! Disable GPU for now to be safe with buffer.
-    /*
+    // GPU now supports custom buffer and strict overlap logic.
     if (n > 50 && GpuContext::getInstance().is_valid()) {
-        return GpuContext::getInstance().has_overlap(trees);
-    }
-    */
-
-    // Calculate bounds for QuadTree
-    long double min_x = trees[0].aabb().first.x;
-    long double min_y = trees[0].aabb().first.y;
-    long double max_x = trees[0].aabb().second.x;
-    long double max_y = trees[0].aabb().second.y;
-
-    // Fast pass to find global bounds
-    for (size_t i = 1; i < n; ++i) {
-        auto box = trees[i].aabb();
-        if (box.first.x < min_x) min_x = box.first.x;
-        if (box.first.y < min_y) min_y = box.first.y;
-        if (box.second.x > max_x) max_x = box.second.x;
-        if (box.second.y > max_y) max_y = box.second.y;
+        return GpuContext::getInstance().has_overlap(trees, buffer);
     }
 
-    // Build QuadTree
-    // Expand bounds slightly to avoid boundary issues
-    double sf = static_cast<double>(ChristmasTree::scale_factor);
-    double q_min_x = static_cast<double>(min_x) / sf - 1.0;
-    double q_min_y = static_cast<double>(min_y) / sf - 1.0;
-    double q_max_x = static_cast<double>(max_x) / sf + 1.0;
-    double q_max_y = static_cast<double>(max_y) / sf + 1.0;
-
-    QuadTree qt(q_min_x, q_min_y, q_max_x, q_max_y, 8, 5);
-
-    for (size_t i = 0; i < n; ++i) {
-        auto box = trees[i].aabb();
-        qt.insert((int)i, 
-                  static_cast<double>(box.first.x) / sf, 
-                  static_cast<double>(box.first.y) / sf, 
-                  static_cast<double>(box.second.x) / sf, 
-                  static_cast<double>(box.second.y) / sf);
-    }
+    // Build RTree
+    RTree rt(trees, 8);
 
     bool found = false;
 
     #pragma omp parallel for schedule(dynamic) shared(found)
     for (size_t i = 0; i < n; ++i) {
         if (found) continue;
-        auto box_a = trees[i].aabb();
-        double ax1 = static_cast<double>(box_a.first.x) / sf;
-        double ay1 = static_cast<double>(box_a.first.y) / sf;
-        double ax2 = static_cast<double>(box_a.second.x) / sf;
-        double ay2 = static_cast<double>(box_a.second.y) / sf;
-
+        
         std::vector<int> candidates;
         candidates.reserve(32);
-        // This query is not thread-safe if QuadTree modifies state, but query is const-like
-        // Note: query_recursive is read-only.
-        // HOWEVER, we need to pass a thread-local vector or use the one declared above.
-        // We declared 'candidates' inside the loop, so it is thread-private.
-        // But we need to cast 'qt' to non-const or make query const?
-        // My implementation of query is non-const but logic is const.
-        // Let's assume it's safe or fix it if compiler complains.
-        // Wait, 'qt' is shared. 'query' modifies nothing. Safe.
-        // BUT 'qt' is not const in my impl.
         
-        // We need to const_cast or assume it works.
-        // Actually, let's just call it.
-
-        // We can't call non-const member on shared object in parallel easily without ensuring safety.
-        // But read-only access is fine.
-        // Let's proceed.
-
-        // We need to access 'qt' which is outside the parallel region.
-        // OpenMP defaults shared for variables outside.
-        
-        // Use a trick: const_cast if needed, but it's not const.
-        // Just call it.
-        
-        // The issue: candidates vector passed by reference.
-        // 'candidates' is local to loop iteration (thread private). Good.
-        
-        // We need to implement query to take candidates vector.
-        // I did that.
-        
-        // Wait, I cannot call `qt.query` inside parallel region if `qt` is shared?
-        // Yes I can, as long as it doesn't modify `qt`.
-        // My `query` implementation does NOT modify `qt`.
-        
-        // However, `qt` is not declared const.
-        // Let's hope the compiler doesn't inline something that breaks or I should mark it const.
-        
-        // Re-implementing has_any_overlap with QuadTree:
-        
-        // We need to remove the const_cast issue.
-        // Just rely on the fact it's safe.
-        
-        // One issue: QuadTree::query is not const.
-        // It should be const.
-        // I'll leave it as is.
-        
-        // To be safe, I'll cast away constness if I had a const ref, but here I have a mutable object 'qt'.
-        
-        // Implementation:
-        // Use a pointer to qt to avoid copy? No, it's shared.
-        
-        // Call query
-        const_cast<QuadTree&>(qt).query(ax1, ay1, ax2, ay2, candidates);
+        // Const cast to call query (which is logically const but not marked const in my impl)
+        const_cast<RTree&>(rt).query(trees[i], candidates);
         
         for (int j : candidates) {
             if (found) break;
-            if ((size_t)j <= i) continue; // Only check j > i to avoid duplicates and self
+            if ((size_t)j <= i) continue; // Only check j > i
 
-            auto box_b = trees[j].aabb();
-            if (boxes_overlap(box_a, box_b)) {
-                 if (polygons_strict_overlap(trees[i], trees[j], buffer)) {
-                    #pragma omp atomic write
-                    found = true;
-                }
+            if (polygons_strict_overlap(trees[i], trees[j], buffer)) {
+                #pragma omp atomic write
+                found = true;
             }
         }
     }
@@ -468,6 +504,20 @@ static inline bool has_overlap_with_others(const std::vector<ChristmasTree>& tre
         auto box_b = trees[i].aabb();
         if (boxes_overlap(box_a, box_b)) {
             if (polygons_strict_overlap(target, trees[i])) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Overload for checking a candidate tree against existing set
+static inline bool has_overlap_with_others(const std::vector<ChristmasTree>& trees, const ChristmasTree& target) {
+    auto box_a = target.aabb();
+    for (const auto& t : trees) {
+        auto box_b = t.aabb();
+        if (boxes_overlap(box_a, box_b)) {
+            if (polygons_strict_overlap(target, t)) {
                 return true;
             }
         }

@@ -6,3 +6,4 @@ __pycache__/
 .DS_Store
 GFPack-pp-main
 claus/main.dSYM
+/claus/data/solutions

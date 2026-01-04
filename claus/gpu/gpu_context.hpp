@@ -6,7 +6,7 @@ class GpuContext {
 public:
     static GpuContext& getInstance();
     bool is_valid();
-    bool has_overlap(const std::vector<ChristmasTree>& trees);
+    bool has_overlap(const std::vector<ChristmasTree>& trees, double buffer = 0.0);
 
 private:
     GpuContext();

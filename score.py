@@ -136,6 +136,19 @@ def score(solution: pd.DataFrame, submission: pd.DataFrame, row_id_column_name: 
                 if index == i:  # don't check against self
                     continue
                 if poly.intersects(all_polygons[index]) and not poly.touches(all_polygons[index]):
+                    # Debug output
+                    print(f"Overlap detected in group {group}: Tree {i} and Tree {index}")
+                    # p1_bounds = poly.bounds
+                    # p2_bounds = all_polygons[index].bounds
+                    # print(f"Tree {i} bounds: {p1_bounds}")
+                    # print(f"Tree {index} bounds: {p2_bounds}")
+                    
+                    # raise ParticipantVisibleError(f'Overlapping trees in group {group}')
+                    # Instead of raising, we can print warning and continue to check other groups for debugging
+                    print(f'Overlapping trees in group {group}')
+                    # For strict scoring, we should raise. But for debugging, let's just warn?
+                    # The user wants to FIX the overlaps, so raising is good but maybe we need more info.
+                    # Let's re-raise after printing info.
                     raise ParticipantVisibleError(f'Overlapping trees in group {group}')
 
         # Calculate score for the group

@@ -60,19 +60,14 @@ inline std::tuple<long double, GridState, std::vector<ChristmasTree>> sa_optimiz
     );
 
     if (overlap::has_any_overlap(trees)) {
-        // Simple recovery strategy: expand grid spacing
-        // Python code does: a = max(a, a_test * 1.5), b = max(b, b_test * 1.5)
-        // Here we just blindly increase if overlapping?
-        // Let's assume the caller provides a reasonable start or we just bump a,b slightly?
-        // Python code calls get_initial_translations. 
-        // For now, let's just proceed. The SA might fix it or it might stay bad.
-        // Actually, let's implement the expansion:
+        // Recovery: expand grid spacing
         current.a *= 1.5;
         current.b *= 1.5;
         trees = grid::create_grid_trees(
             current.seed_xs, current.seed_ys, current.seed_degs,
             current.a, current.b, ncols, nrows, append_x, append_y,
-            current.row_phase_x, current.col_phase_y, current.shear_x, current.shear_y,
+            current.row_phase_x, current.col_phase_y, 
+            current.shear_x, current.shear_y,
             current.parity_row_deg, current.parity_col_deg
         );
     }
@@ -210,8 +205,6 @@ inline std::tuple<long double, GridState, std::vector<ChristmasTree>> sa_optimiz
                 if (delta < 0) {
                      move_weights[move_type] *= 1.1; 
                 } else {
-                     // Accepted but worse? Maybe slight reward or neutral?
-                     // Let's just reward improvement significantly.
                      move_weights[move_type] *= 1.02; 
                 }
 
@@ -252,9 +245,6 @@ inline std::tuple<long double, std::vector<ChristmasTree>> sa_optimize_individua
     long double current_secondary_score = overlap::calculate_moment_of_inertia(current_trees);
     
     // Weight for secondary score. 
-    // Side^2 is around 60-100. Moment is around 10000.
-    // We want secondary to be a tie-breaker, not driver.
-    // Let's say we want 1.0 improvement in main score to be worth 1000 improvement in secondary.
     double lambda = 1e-4; 
     
     long double current_total_score = current_main_score + lambda * current_secondary_score;
@@ -319,22 +309,22 @@ inline std::tuple<long double, std::vector<ChristmasTree>> sa_optimize_individua
                  }
                  
                  if (possible) {
-                     long double new_main = overlap::calculate_score(current_trees);
-                     long double new_sec = overlap::calculate_moment_of_inertia(current_trees);
-                     long double new_total = new_main + lambda * new_sec;
+                    long double new_main = overlap::calculate_score(current_trees);
+                    long double new_sec = overlap::calculate_moment_of_inertia(current_trees);
+                    long double new_total = new_main + lambda * new_sec;
                      
-                     // Always accept compression if valid? Yes, it reduces objective.
-                     current_main_score = new_main;
-                     current_secondary_score = new_sec;
-                     current_total_score = new_total;
+                    // Always accept compression if valid? Yes, it reduces objective.
+                    current_main_score = new_main;
+                    current_secondary_score = new_sec;
+                    current_total_score = new_total;
                      
-                     if (current_main_score < best_main_score) {
-                         best_main_score = current_main_score;
-                         best_total_score = current_total_score;
-                         best_trees = current_trees;
-                     }
-                     accepted_moves++;
-                 }
+                    if (current_main_score < best_main_score) {
+                        best_main_score = current_main_score;
+                        best_total_score = current_total_score;
+                        best_trees = current_trees;
+                    }
+                    accepted_moves++;
+                }
             } else {
                 // Perturbation Move
                 int idx = std::uniform_int_distribution<int>(0, n_trees - 1)(rng);
@@ -348,7 +338,11 @@ inline std::tuple<long double, std::vector<ChristmasTree>> sa_optimize_individua
                 current_trees[idx].center_y += dy;
                 current_trees[idx].angle_deg = std::fmod(current_trees[idx].angle_deg + ddeg, 360.0);
                 
-                current_trees[idx] = ChristmasTree(current_trees[idx].center_x, current_trees[idx].center_y, current_trees[idx].angle_deg);
+                current_trees[idx] = ChristmasTree(
+                    current_trees[idx].center_x, 
+                    current_trees[idx].center_y, 
+                    current_trees[idx].angle_deg
+                );
                 
                 bool valid = true;
                 if (current_trees[idx].center_x < -100.0L || current_trees[idx].center_x > 100.0L ||
@@ -427,7 +421,11 @@ inline std::vector<ChristmasTree> coordinate_descent_polish(std::vector<Christma
                 trees[i].center_x += m.dx;
                 trees[i].center_y += m.dy;
                 trees[i].angle_deg = std::fmod(trees[i].angle_deg + m.ddeg, 360.0);
-                trees[i] = ChristmasTree(trees[i].center_x, trees[i].center_y, trees[i].angle_deg);
+                trees[i] = ChristmasTree(
+                    trees[i].center_x, 
+                    trees[i].center_y, 
+                    trees[i].angle_deg
+                );
                 
                 bool valid = true;
                 if (trees[i].center_x < -100.0L || trees[i].center_x > 100.0L ||
@@ -549,12 +547,7 @@ inline std::vector<ChristmasTree> squeeze_optimization(std::vector<ChristmasTree
     int total_moves_in_window = 0;
     const int adaptation_window = 100;
 
-    // Initial cost: Overlap Area
-    // Monte Carlo is too slow for 5000 steps. 
-    // Use Proxy: Number of overlapping pairs? Or Penetration Depth approximation?
-    // Let's use Number of Overlapping Pairs + Distance to Center
-    
-    // Actually, simple SA with "Count Overlaps" objective is often enough to find a valid config if density permits.
+    // Initial cost: Proxy objective
     // Cost = OverlapPairs * 1000 + Repulsion + Compaction
     
     // Incremental Cost Calculation
@@ -565,29 +558,39 @@ inline std::vector<ChristmasTree> squeeze_optimization(std::vector<ChristmasTree
         double repulsion = 0.0;
         double compaction = 0.0;
         
+        auto box_idx = t[idx].aabb();
+
         // Check against all other trees
         for(size_t j=0; j<t.size(); ++j) {
             if((int)j == idx) continue;
             
             // AABB Check
-            double dx = t[idx].center_x - t[j].center_x;
-            double dy = t[idx].center_y - t[j].center_y;
-            double d2 = dx*dx + dy*dy;
-            
-            if (d2 < 4.0) {
-                 // Repulsion
+            auto box_j = t[j].aabb();
+            if (overlap::boxes_overlap(box_idx, box_j)) {
+                 // Repulsion (approximate distance for gradient)
+                 double dx = t[idx].center_x - t[j].center_x;
+                 double dy = t[idx].center_y - t[j].center_y;
+                 double d2 = dx*dx + dy*dy;
                  double dist = std::sqrt(d2);
                  if (dist < 0.8) {
                      repulsion += (0.8 - dist) * 10.0;
                  }
                  
                  // Strict Overlap
-                 // Note: This counts pairs. Total cost = sum(pairs) / 2? 
-                 // Or just sum of this function over all i?
-                 // If we sum this over all i, we count each pair twice. That's fine for optimization.
                  if (overlap::polygons_strict_overlap(t[idx], t[j])) {
                      overlaps += 1.0;
                  }
+            } else {
+                // Even if AABB doesn't overlap, check distance for repulsion field
+                double dx = t[idx].center_x - t[j].center_x;
+                double dy = t[idx].center_y - t[j].center_y;
+                double d2 = dx*dx + dy*dy;
+                if (d2 < 1.0) { // Interaction radius
+                     double dist = std::sqrt(d2);
+                     if (dist < 0.8) {
+                         repulsion += (0.8 - dist) * 10.0;
+                     }
+                }
             }
         }
         
@@ -601,10 +604,6 @@ inline std::vector<ChristmasTree> squeeze_optimization(std::vector<ChristmasTree
     for(size_t i=0; i<trees.size(); ++i) {
         current_cost += get_tree_contribution(trees, (int)i);
     }
-    // Since we count pairs twice, divide overlap/repulsion by 2? 
-    // Actually, compaction is counted once per tree.
-    // Pairwise terms are counted twice.
-    // It doesn't matter for optimization as long as it's consistent.
     
     double best_cost = current_cost;
     std::vector<ChristmasTree> best_trees = trees;
@@ -640,11 +639,50 @@ inline std::vector<ChristmasTree> squeeze_optimization(std::vector<ChristmasTree
         // Calculate OLD contribution of this tree
         double old_contrib = get_tree_contribution(trees, idx);
         
+        // Guided Mutation: Calculate repulsion gradient from overlaps
+        double grad_x = 0.0;
+        double grad_y = 0.0;
+        auto box_idx = trees[idx].aabb();
+        for(size_t j=0; j<trees.size(); ++j) {
+            if((int)j == idx) continue;
+            // Use AABB check first
+            auto box_j = trees[j].aabb();
+            if(overlap::boxes_overlap(box_idx, box_j)) {
+                 // Check if strict overlap or just close
+                 if (overlap::polygons_strict_overlap(trees[idx], trees[j])) {
+                     double diff_x = trees[idx].center_x - trees[j].center_x;
+                     double diff_y = trees[idx].center_y - trees[j].center_y;
+                     double d2 = diff_x*diff_x + diff_y*diff_y;
+                     
+                     if (d2 < 1e-9) {
+                         // Exact overlap (duplicate): Strong random repulsion
+                         grad_x += (dist01(rng) * 2.0 - 1.0) * 100.0;
+                         grad_y += (dist01(rng) * 2.0 - 1.0) * 100.0;
+                     } else {
+                         // Strong repulsion for overlap
+                         grad_x += diff_x / d2;
+                         grad_y += diff_y / d2;
+                     }
+                 }
+            }
+        }
+        
         // Perturb
         double dx = (dist01(rng)*2.0-1.0) * params.position_delta * scale_linear;
         double dy = (dist01(rng)*2.0-1.0) * params.position_delta * scale_linear;
         double ddeg = (dist01(rng)*2.0-1.0) * params.angle_delta * scale_angle;
         
+        // Apply gradient bias if overlapping
+        double g_len = std::sqrt(grad_x*grad_x + grad_y*grad_y);
+        if(g_len > 1e-9) {
+            grad_x /= g_len;
+            grad_y /= g_len;
+            // Bias the move significantly if overlapping
+            double bias_strength = 0.8; 
+            dx = dx * (1.0 - bias_strength) + grad_x * params.position_delta * scale_linear * bias_strength;
+            dy = dy * (1.0 - bias_strength) + grad_y * params.position_delta * scale_linear * bias_strength;
+        }
+
         trees[idx].center_x += dx;
         trees[idx].center_y += dy;
         trees[idx].angle_deg = std::fmod(trees[idx].angle_deg + ddeg, 360.0);
@@ -830,6 +868,41 @@ inline std::tuple<long double, std::vector<ChristmasTree>> ga_optimize(
     return {global_best_score, global_best_trees};
 }
 
+inline std::vector<ChristmasTree> optimize_cluster(int n_trees, int seed) {
+    std::mt19937 rng(seed);
+    std::vector<ChristmasTree> cluster;
+    cluster.reserve(n_trees);
+    
+    // Heuristic initialization: Spiral
+    double spacing = 0.5;
+    for(int i=0; i<n_trees; ++i) {
+        double angle = i * 2.4; // Golden angle-ish
+        double r = spacing * std::sqrt(i);
+        double x = r * std::cos(angle);
+        double y = r * std::sin(angle);
+        cluster.emplace_back(x, y, (double)(i * 30));
+    }
+    
+    // Optimize cluster
+    SAParams params;
+    params.nsteps = 10000;
+    params.Tmax = 2.0;
+    params.Tmin = 0.001;
+    params.seed = seed;
+    params.position_delta = 0.1;
+    params.angle_delta = 5.0;
+    params.nsteps_per_T = 1;
+    
+    // Squeeze first to compact
+    cluster = squeeze_optimization(cluster, 0.01, 5000);
+    
+    // Then polish
+    auto res = sa_optimize_individual(cluster, params);
+    cluster = std::get<1>(res);
+    
+    return cluster;
+}
+
 inline std::tuple<long double, GridState, std::vector<ChristmasTree>> refine_grid(
     const GridState& state,
     int ncols, int nrows,
@@ -891,22 +964,15 @@ inline std::tuple<long double, GridState, std::vector<ChristmasTree>> refine_gri
             }
 
             GridState cand = best;
-            if (key == 0) {
-                cand.row_phase_x = best.row_phase_x + delta;
-            } else if (key == 1) {
-                cand.col_phase_y = best.col_phase_y + delta;
-            } else if (key == 2) {
-                cand.shear_x = best.shear_x + delta;
-            } else if (key == 3) {
-                cand.shear_y = best.shear_y + delta;
-            } else if (key == 4) {
-                cand.parity_row_deg = std::fmod(best.parity_row_deg + delta, 360.0);
-            } else if (key == 5) {
-                cand.parity_col_deg = std::fmod(best.parity_col_deg + delta, 360.0);
-            } else if (key == 6) {
-                cand.a = best.a + best.a * delta;
-            } else if (key == 7) {
-                cand.b = best.b + best.b * delta;
+            switch (key) {
+                case 0: cand.row_phase_x = best.row_phase_x + delta; break;
+                case 1: cand.col_phase_y = best.col_phase_y + delta; break;
+                case 2: cand.shear_x = best.shear_x + delta; break;
+                case 3: cand.shear_y = best.shear_y + delta; break;
+                case 4: cand.parity_row_deg = std::fmod(best.parity_row_deg + delta, 360.0); break;
+                case 5: cand.parity_col_deg = std::fmod(best.parity_col_deg + delta, 360.0); break;
+                case 6: cand.a = best.a + best.a * delta; break;
+                case 7: cand.b = best.b + best.b * delta; break;
             }
 
             auto trees = grid::create_grid_trees(
@@ -946,6 +1012,25 @@ inline std::tuple<long double, GridState, std::vector<ChristmasTree>> refine_gri
     }
 
     return {best_score, best, best_trees};
+}
+
+inline GridState create_tiled_state(const std::vector<ChristmasTree>& cluster, double a, double b) {
+    GridState s;
+    s.a = a;
+    s.b = b;
+    s.row_phase_x = 0;
+    s.col_phase_y = 0;
+    s.shear_x = 0;
+    s.shear_y = 0;
+    s.parity_row_deg = 0;
+    s.parity_col_deg = 0;
+    
+    for(const auto& t : cluster) {
+        s.seed_xs.push_back(t.center_x);
+        s.seed_ys.push_back(t.center_y);
+        s.seed_degs.push_back(t.angle_deg);
+    }
+    return s;
 }
 
 } // namespace optimization

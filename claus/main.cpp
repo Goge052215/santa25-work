@@ -16,6 +16,7 @@
 #include "overlap.hpp"
 #include "optimization.hpp"
 #include "gpu/gpu_context.hpp"
+// #include "placement_model.hpp"
 
 using namespace optimization;
 
@@ -97,6 +98,24 @@ void deletion_cascade(
 
 ChristmasTree find_valid_placement(const std::vector<ChristmasTree>& existing, int seed) {
     std::mt19937 rng(seed);
+    
+    // 1. Try ML-guided placement first
+    /*
+    for(int i=0; i<5000; ++i) {
+        ChristmasTree cand = ml_policy::propose_placement(existing, seed + i);
+        
+        // Check bounds
+        if (cand.center_x < -100.0L || cand.center_x > 100.0L ||
+            cand.center_y < -100.0L || cand.center_y > 100.0L) continue;
+
+        // Check overlap with existing
+        if (!overlap::has_overlap_with_others(existing, cand)) {
+            return cand;
+        }
+    }
+    */
+
+    // 2. Fallback to random if ML fails
     // Determine bounds
     long double min_x = 100.0L, max_x = -100.0L;
     long double min_y = 100.0L, max_y = -100.0L;
@@ -124,7 +143,7 @@ ChristmasTree find_valid_placement(const std::vector<ChristmasTree>& existing, i
     std::uniform_real_distribution<long double> ddeg(0.0L, 360.0L);
 
     // Try random placements
-    for (int i = 0; i < 10000; ++i) {
+    for (int i = 0; i < 5000; ++i) {
         ChristmasTree cand(dx(rng), dy(rng), ddeg(rng));
         
         // Check bounds
@@ -132,14 +151,9 @@ ChristmasTree find_valid_placement(const std::vector<ChristmasTree>& existing, i
             cand.center_y < -100.0L || cand.center_y > 100.0L) continue;
 
         // Check overlap with existing
-        bool overlap = false;
-        for (const auto& t : existing) {
-            if (overlap::polygons_strict_overlap(cand, t)) {
-                overlap = true;
-                break;
-            }
+        if (!overlap::has_overlap_with_others(existing, cand)) {
+            return cand;
         }
-        if (!overlap) return cand;
     }
     
     // Fallback: Just place it somewhere and hope optimizer fixes it? 
@@ -333,21 +347,33 @@ int main() {
         for (int n = 1; n <= 200; ++n) {
             if (!loaded[n-1].second.empty()) {
                 auto trees = loaded[n-1].second;
+                
+                // Fix initial overlaps if any
+                if (overlap::has_any_overlap(trees)) {
+                    // std::cout << "N=" << n << " fixing initial overlaps..." << std::endl;
+                    // Aggressive squeeze to separate
+                    trees = squeeze_optimization(trees, -0.01, 50000); // Negative shrink = expand slightly to help
+                    if (overlap::has_any_overlap(trees)) {
+                        // std::cout << "N=" << n << " failed to fix overlaps! Trying harder..." << std::endl;
+                        trees = squeeze_optimization(trees, -0.05, 100000);
+                    }
+                }
+
                 long double score = get_side_length(trees);
                 
                 // Refine
                 SAParams local_params = params;
                 local_params.seed = n * 999;
-                local_params.Tmax = 0.5; // Higher temp for "jiggling"
-                local_params.Tmin = 0.0001;
-                local_params.nsteps = 50000; // Much more steps (fast due to O(N))
+                local_params.Tmax = 2.0; // Higher temp for "jiggling" and escaping local optima
+                local_params.Tmin = 1e-6;
+                local_params.nsteps = 200000; // Significantly increased steps utilizing O(N log N) speedup
                 local_params.nsteps_per_T = 1; 
                 
                 auto refined_res = ga_optimize(trees, local_params);
                 auto refined_trees = std::get<1>(refined_res);
                 
                 // Final hard compaction
-                refined_trees = compact_trees(refined_trees, 2000, 0.01);
+                refined_trees = compact_trees(refined_trees, 5000, 0.005);
                 
                 // Coordinate Descent Polish
                 refined_trees = coordinate_descent_polish(refined_trees);
@@ -355,13 +381,13 @@ int main() {
                 // Iterative Squeeze
                 bool squeeze_success = true;
                 int squeeze_iter = 0;
-                while (squeeze_success && squeeze_iter < 10) { // Limit iterations
+                while (squeeze_success && squeeze_iter < 30) { // Increased iterations
                     // Anneal the squeeze factor
                     double factor = 0.005; // Base 0.5%
-                    if (squeeze_iter > 2) factor = 0.002; // Reduce to 0.2%
-                    if (squeeze_iter > 5) factor = 0.001; // Reduce to 0.1%
+                    if (squeeze_iter > 5) factor = 0.002; 
+                    if (squeeze_iter > 15) factor = 0.001; 
 
-                    auto squeezed = squeeze_optimization(refined_trees, factor, 15000);
+                    auto squeezed = squeeze_optimization(refined_trees, factor, 25000);
                     
                     if (!overlap::has_any_overlap(squeezed)) {
                         // Successful squeeze
@@ -398,6 +424,7 @@ int main() {
                     if (score < best_results[n].first) {
                         best_results[n] = {score, trees};
                     }
+                    std::cout << "N=" << n << " done. Score: " << score << (score < get_side_length(loaded[n-1].second) ? " (Improved)" : "") << std::endl;
                 }
             }
         }
@@ -423,7 +450,11 @@ int main() {
 
     // Greedy Insertion (Bottom-Up)
     std::cout << "Running greedy insertion (Bottom-Up)..." << std::endl;
-    greedy_insertion(solutions, params);
+    // Increase params for greedy insertion
+    SAParams greedy_params = params;
+    greedy_params.nsteps = 10000;
+    greedy_params.Tmax = 0.5;
+    greedy_insertion(solutions, greedy_params);
 
     // Deletion cascade (Pass 2)
     std::cout << "Running deletion cascade (Pass 2)..." << std::endl;

@@ -10,7 +10,7 @@
 #include "overlap.hpp"
 
 // Represents a relative geometric relationship between two trees (a "lock")
-struct Pattern {
+struct PlacementPattern {
     double dx;      // Relative x in anchor's coordinate frame
     double dy;      // Relative y in anchor's coordinate frame
     double d_deg;   // Relative angle change
@@ -47,7 +47,7 @@ struct BeamState {
 
 class BeamSearch {
 public:
-    std::vector<Pattern> patterns;
+    std::vector<PlacementPattern> patterns;
 
     // Load patterns from the placement_model CSV/file
     // Format assumed: dx, dy, d_deg, weight
@@ -61,7 +61,7 @@ public:
             if (line.empty()) continue;
             std::stringstream ss(line);
             std::string val;
-            Pattern p;
+            PlacementPattern p;
             
             // Example parsing logic - adjust to your specific file format
             std::vector<double> row;
@@ -80,7 +80,7 @@ public:
     }
 
     // Apply a pattern to an anchor tree to get a new candidate tree
-    ChristmasTree apply_pattern(const ChristmasTree& anchor, const Pattern& pat) const {
+    ChristmasTree apply_pattern(const ChristmasTree& anchor, const PlacementPattern& pat) const {
         // Convert anchor angle to radians
         double rad = anchor.angle_deg * (M_PI / 180.0);
         double c = std::cos(rad);

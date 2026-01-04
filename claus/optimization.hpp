@@ -6,6 +6,7 @@
 #include <tuple>
 #include "grid.hpp"
 #include "overlap.hpp"
+#include "gpu/gpu_context.hpp"
 
 namespace optimization {
 
@@ -515,6 +516,101 @@ inline std::vector<ChristmasTree> compact_trees(std::vector<ChristmasTree> trees
              // Or just keep it.
         }
     }
+    return trees;
+}
+
+// Physics-based optimization: Apply repulsion forces to separate overlapping trees
+inline std::vector<ChristmasTree> physics_polish(std::vector<ChristmasTree> trees, int steps = 1000, double initial_lr = 0.01) {
+    // Try GPU acceleration first
+    if (GpuContext::getInstance().is_valid()) {
+        // std::cout << "Using GPU physics polish" << std::endl;
+        return GpuContext::getInstance().physics_polish(trees, steps, initial_lr);
+    }
+
+    size_t n = trees.size();
+    if (n < 2) return trees;
+
+    // Parameters
+    double repulsion_strength = 1.0;
+    double gravity_strength = 0.001; // Pull towards center to keep compact
+    double learning_rate = initial_lr;
+    double decay = 0.999;
+
+    for (int s = 0; s < steps; ++s) {
+        bool any_overlap = false;
+        std::vector<std::pair<double, double>> forces(n, {0.0, 0.0});
+
+        // 1. Compute forces
+        for (size_t i = 0; i < n; ++i) {
+            auto box_i = trees[i].aabb();
+            
+            // Gravity (Centripetal force)
+            forces[i].first -= trees[i].center_x * gravity_strength;
+            forces[i].second -= trees[i].center_y * gravity_strength;
+
+            for (size_t j = 0; j < n; ++j) {
+                if (i == j) continue;
+                
+                // Repulsion only if close
+                double dx = trees[i].center_x - trees[j].center_x;
+                double dy = trees[i].center_y - trees[j].center_y;
+                double dist_sq = dx*dx + dy*dy;
+                
+                // Effective radius approximation (trees are roughly size 1x1)
+                // If dist < 2.0, they might overlap.
+                if (dist_sq < 4.0) {
+                    double dist = std::sqrt(dist_sq);
+                    if (dist < 1e-6) {
+                        dx = (double(rand()) / RAND_MAX) - 0.5;
+                        dy = (double(rand()) / RAND_MAX) - 0.5;
+                        dist = 1e-3;
+                    }
+                    
+                    bool is_overlapping = false;
+                    auto box_j = trees[j].aabb();
+                    if (overlap::boxes_overlap(box_i, box_j)) {
+                        if (overlap::polygons_strict_overlap(trees[i], trees[j])) {
+                            is_overlapping = true;
+                            any_overlap = true;
+                        }
+                    }
+
+                    if (is_overlapping) {
+                        // Strong Repulsion
+                        double force = repulsion_strength * (2.0 - dist) / dist; // Simple linear spring
+                        forces[i].first += dx * force;
+                        forces[i].second += dy * force;
+                    } else if (dist < 1.2) {
+                        // Weak Repulsion buffer
+                        double force = repulsion_strength * 0.1 * (1.2 - dist) / dist;
+                        forces[i].first += dx * force;
+                        forces[i].second += dy * force;
+                    }
+                }
+            }
+        }
+
+        // 2. Apply forces
+        if (!any_overlap && s > 100) {
+            // Early exit if stable and valid? 
+            // No, keep compressing via gravity.
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            trees[i].center_x += forces[i].first * learning_rate;
+            trees[i].center_y += forces[i].second * learning_rate;
+            
+            // Bounds check
+            if (trees[i].center_x < -100.0) trees[i].center_x = -100.0;
+            if (trees[i].center_x > 100.0) trees[i].center_x = 100.0;
+            if (trees[i].center_y < -100.0) trees[i].center_y = -100.0;
+            if (trees[i].center_y > 100.0) trees[i].center_y = 100.0;
+        }
+
+        learning_rate *= decay;
+        if (learning_rate < 1e-6) break;
+    }
+    
     return trees;
 }
 

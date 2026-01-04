@@ -96,6 +96,7 @@ bool point_in_polygon(Point p, Point poly[15]) {
     return inside;
 }
 
+// Restore check_overlaps kernel
 kernel void check_overlaps(
     device const TreeData* trees [[ buffer(0) ]],
     device atomic_int* result [[ buffer(1) ]],
@@ -120,19 +121,13 @@ kernel void check_overlaps(
     float dy = t1.y - t2.y;
     float dist_sq = dx*dx + dy*dy;
     float da = abs(t1.angle - t2.angle);
-    // Normalize angle diff roughly (assuming 0-360 range inputs, but to be safe)
-    // For GPU, simple check is enough if optimizer is stacking them
     if (dist_sq < 1e-8f && da < 1e-3f) {
-         atomic_store_explicit(result, 1, memory_order_relaxed);
-         return;
+        atomic_store_explicit(result, 1, memory_order_relaxed);
+        return;
     }
 
     float scale = 1.0 + buffer_size;
 
-    // Bounding box check first
-    // Need to compute transformed vertices to get BB
-    // This duplicates work but avoids storing vertices in memory
-    
     Point poly1[15];
     Point poly2[15];
     
@@ -202,6 +197,218 @@ kernel void check_overlaps(
         }
     }
 }
+
+struct PhysicsParams {
+    float repulsion_strength;
+    float gravity_strength;
+    float learning_rate;
+    float buffer_val;
+};
+
+// Helper to transform polygon
+void get_transformed_poly(TreeData t, float scale, thread Point* poly) {
+    float rad = t.angle * 3.14159265358979323846f / 180.0f;
+    float c = cos(rad);
+    float s = sin(rad);
+    
+    for (int k = 0; k < 15; ++k) {
+        Point p = base_poly[k];
+        float rx = (p.x * c - p.y * s) * scale;
+        float ry = (p.x * s + p.y * c) * scale;
+        poly[k] = {rx + t.x, ry + t.y};
+    }
+}
+
+// Check overlap between two transformed polygons
+bool check_poly_overlap(thread const Point* poly1, thread const Point* poly2, float min_x1, float max_x1, float min_y1, float max_y1, float min_x2, float max_x2, float min_y2, float max_y2) {
+    // AABB Check
+    if (max_x1 < min_x2 || max_x2 < min_x1 || max_y1 < min_y2 || max_y2 < min_y1) return false;
+    
+    // 1. Edges
+    for (int a = 0; a < 15; ++a) {
+        Point p1 = poly1[a];
+        Point p2 = poly1[(a + 1) % 15];
+        for (int b = 0; b < 15; ++b) {
+            Point q1 = poly2[b];
+            Point q2 = poly2[(b + 1) % 15];
+            if (segments_strict_intersect(p1, p2, q1, q2)) return true;
+        }
+    }
+    
+    // 2. Point in Poly
+    for (int k = 0; k < 15; ++k) {
+        // Point in Poly1 check for poly2[k]
+        // We use the helper function but we need to pass array.
+        // Metal arrays in arguments must be strictly typed.
+        // Let's implement point_in_polygon inline or use a template/macro if needed.
+        // But the helper `point_in_polygon` takes `Point poly[15]` which is thread address space?
+        // The helper signature `bool point_in_polygon(Point p, Point poly[15])` expects default address space (usually thread/private).
+        // Let's cast/copy.
+        
+        // Actually, let's just re-implement point_in_polygon logic here to avoid address space issues
+        // or ensure helper works.
+        // The helper defined above takes `Point poly[15]`. By default in Metal for function args,
+        // if address space is not specified, it infers.
+        // But `poly1` here is `thread Point*`.
+        
+        // Let's try calling existing helper.
+        // We need to dereference the pointer? No, array decay.
+        // But `poly1` is a pointer to thread memory.
+        
+        // Let's just assume we can't easily call the helper due to array vs pointer mismatch
+        // and just inline or use a robust helper.
+        
+        // For simplicity and safety, I will implement a robust `is_inside` function 
+        // that takes pointer and size.
+    }
+    return false;
+}
+
+// We will implement the physics kernel fully.
+
+kernel void physics_step(
+    device const TreeData* trees_in [[ buffer(0) ]],
+    device TreeData* trees_out [[ buffer(1) ]],
+    constant int& n_trees [[ buffer(2) ]],
+    constant PhysicsParams& params [[ buffer(3) ]],
+    uint id [[ thread_position_in_grid ]]
+) {
+    if (id >= (uint)n_trees) return;
+
+    TreeData t1 = trees_in[id];
+    float2 force = float2(0.0f, 0.0f);
+    
+    // Gravity
+    force.x -= t1.x * params.gravity_strength;
+    force.y -= t1.y * params.gravity_strength;
+    
+    // Transform my poly once
+    Point poly1[15];
+    float min_x1 = 1e9, min_y1 = 1e9, max_x1 = -1e9, max_y1 = -1e9;
+    
+    // Transform t1
+    float rad1 = t1.angle * 3.14159265f / 180.0f;
+    float c1 = cos(rad1);
+    float s1 = sin(rad1);
+    float scale = 1.0f + params.buffer_val; // Usually 0 for physics strict check, but might use buffer
+    
+    for (int k = 0; k < 15; ++k) {
+        Point p = base_poly[k];
+        float rx = (p.x * c1 - p.y * s1) * scale;
+        float ry = (p.x * s1 + p.y * c1) * scale;
+        poly1[k] = {rx + t1.x, ry + t1.y};
+        min_x1 = min(min_x1, poly1[k].x);
+        min_y1 = min(min_y1, poly1[k].y);
+        max_x1 = max(max_x1, poly1[k].x);
+        max_y1 = max(max_y1, poly1[k].y);
+    }
+    
+    for (int j = 0; j < n_trees; ++j) {
+        if (id == (uint)j) continue;
+        
+        TreeData t2 = trees_in[j];
+        float dx = t1.x - t2.x;
+        float dy = t1.y - t2.y;
+        float dist_sq = dx*dx + dy*dy;
+        
+        if (dist_sq < 4.0f) { // Interaction range
+            float dist = sqrt(dist_sq);
+            if (dist < 1e-6f) {
+                // Random jitter deterministic based on IDs
+                float seed = (float)(id * 12345 + j * 6789);
+                dx = fract(sin(seed) * 43758.5453) - 0.5f;
+                dy = fract(cos(seed) * 43758.5453) - 0.5f;
+                dist = 1e-3f;
+            }
+            
+            bool is_overlapping = false;
+            
+            // Check overlap
+            // Transform t2
+            Point poly2[15];
+            float min_x2 = 1e9, min_y2 = 1e9, max_x2 = -1e9, max_y2 = -1e9;
+            
+            float rad2 = t2.angle * 3.14159265f / 180.0f;
+            float c2 = cos(rad2);
+            float s2 = sin(rad2);
+            
+            for (int k = 0; k < 15; ++k) {
+                Point p = base_poly[k];
+                float rx = (p.x * c2 - p.y * s2) * scale;
+                float ry = (p.x * s2 + p.y * c2) * scale;
+                poly2[k] = {rx + t2.x, ry + t2.y};
+                min_x2 = min(min_x2, poly2[k].x);
+                min_y2 = min(min_y2, poly2[k].y);
+                max_x2 = max(max_x2, poly2[k].x);
+                max_y2 = max(max_y2, poly2[k].y);
+            }
+            
+            // AABB
+            if (!(max_x1 < min_x2 || max_x2 < min_x1 || max_y1 < min_y2 || max_y2 < min_y1)) {
+                // Detailed check
+                bool overlap_found = false;
+                
+                // Edge intersect
+                for (int a = 0; a < 15 && !overlap_found; ++a) {
+                    Point p1 = poly1[a];
+                    Point p2 = poly1[(a + 1) % 15];
+                    for (int b = 0; b < 15; ++b) {
+                        Point q1 = poly2[b];
+                        Point q2 = poly2[(b + 1) % 15];
+                        if (segments_strict_intersect(p1, p2, q1, q2)) {
+                            overlap_found = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // Point in poly
+                if (!overlap_found) {
+                     // Check poly2 points in poly1
+                     for (int k = 0; k < 15; ++k) {
+                         if (point_in_polygon(poly2[k], poly1)) {
+                             overlap_found = true; break;
+                         }
+                     }
+                }
+                if (!overlap_found) {
+                     // Check poly1 points in poly2
+                     for (int k = 0; k < 15; ++k) {
+                         if (point_in_polygon(poly1[k], poly2)) {
+                             overlap_found = true; break;
+                         }
+                     }
+                }
+                
+                is_overlapping = overlap_found;
+            }
+            
+            if (is_overlapping) {
+                float f = params.repulsion_strength * (2.0f - dist) / dist;
+                force.x += dx * f;
+                force.y += dy * f;
+            } else if (dist < 1.2f) {
+                float f = params.repulsion_strength * 0.1f * (1.2f - dist) / dist;
+                force.x += dx * f;
+                force.y += dy * f;
+            }
+        }
+    }
+    
+    // Update
+    float new_x = t1.x + force.x * params.learning_rate;
+    float new_y = t1.y + force.y * params.learning_rate;
+    
+    // Clamp
+    new_x = clamp(new_x, -100.0f, 100.0f);
+    new_y = clamp(new_y, -100.0f, 100.0f);
+    
+    trees_out[id].x = new_x;
+    trees_out[id].y = new_y;
+    trees_out[id].angle = t1.angle;
+    trees_out[id].padding = t1.padding;
+}
+
 
 struct SharedPoly {
     Point points[15];

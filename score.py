@@ -165,7 +165,7 @@ if __name__ == '__main__':
     import sys
     import os
 
-    submission_path = '/Users/goge/santa25/claus/data/submission.csv'
+    submission_path = '/Users/goge/santa25/submission.csv'
     if len(sys.argv) > 1:
         submission_path = sys.argv[1]
 

@@ -8,6 +8,7 @@ rm gpu/gpu_overlap.air
 # Compile C++ code
 echo "Compiling C++ code..."
 clang++ -std=gnu++17 -O3 -Xpreprocessor -fopenmp \
+    -fobjc-arc \
     -I/opt/homebrew/opt/libomp/include \
     -L/opt/homebrew/opt/libomp/lib -lomp \
     -framework Metal -framework Foundation \

@@ -24,7 +24,6 @@ public:
     id<MTLComputePipelineState> pipelineStateShared;
     id<MTLComputePipelineState> pipelineStatePhysics; 
     id<MTLComputePipelineState> pipelineStateSA; // New SA kernel
-    id<MTLComputePipelineState> pipelineStateCandidates;
     bool valid;
     
     // Cached resources to avoid reallocation
@@ -88,13 +87,6 @@ public:
             pipelineStateSA = [device newComputePipelineStateWithFunction:kernelSA error:&error];
         } else {
              std::cerr << "Warning: 'batch_sa_optimize' kernel not found." << std::endl;
-        }
-
-        id<MTLFunction> kernelCandidates = [library newFunctionWithName:@"check_candidate_overlaps"];
-        if (kernelCandidates) {
-            pipelineStateCandidates = [device newComputePipelineStateWithFunction:kernelCandidates error:&error];
-        } else {
-             std::cerr << "Warning: 'check_candidate_overlaps' kernel not found." << std::endl;
         }
         
         valid = true;
@@ -343,73 +335,6 @@ public:
             return new_solutions;
         }
     }
-
-    std::vector<int> check_candidates_overlap(
-        const std::vector<ChristmasTree>& fixed_trees,
-        const std::vector<ChristmasTree>& candidates,
-        float buffer
-    ) {
-        if (!valid || !pipelineStateCandidates || candidates.empty()) return std::vector<int>(candidates.size(), 0);
-        
-        @autoreleasepool {
-            size_t n_fixed = fixed_trees.size();
-            size_t n_cand = candidates.size();
-            
-            // Prepare buffers
-            // Fixed Trees
-            std::vector<TreeData> fixedData(n_fixed);
-            for(size_t i=0; i<n_fixed; ++i) {
-                fixedData[i].x = (float)fixed_trees[i].center_x;
-                fixedData[i].y = (float)fixed_trees[i].center_y;
-                fixedData[i].angle = (float)fixed_trees[i].angle_deg;
-            }
-            
-            // Candidates
-            std::vector<TreeData> candData(n_cand);
-            for(size_t i=0; i<n_cand; ++i) {
-                candData[i].x = (float)candidates[i].center_x;
-                candData[i].y = (float)candidates[i].center_y;
-                candData[i].angle = (float)candidates[i].angle_deg;
-            }
-            
-            id<MTLBuffer> fixedBuffer = [device newBufferWithBytes:fixedData.data() length:n_fixed * sizeof(TreeData) options:MTLResourceStorageModeShared];
-            id<MTLBuffer> candBuffer = [device newBufferWithBytes:candData.data() length:n_cand * sizeof(TreeData) options:MTLResourceStorageModeShared];
-            id<MTLBuffer> resultsBuffer = [device newBufferWithLength:n_cand * sizeof(int) options:MTLResourceStorageModeShared];
-            
-            // Encode
-            id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
-            id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-            [encoder setComputePipelineState:pipelineStateCandidates];
-            
-            int n_fixed_val = (int)n_fixed;
-            int n_cand_val = (int)n_cand;
-            
-            [encoder setBuffer:fixedBuffer offset:0 atIndex:0];
-            [encoder setBuffer:candBuffer offset:0 atIndex:1];
-            [encoder setBuffer:resultsBuffer offset:0 atIndex:2];
-            [encoder setBytes:&n_fixed_val length:sizeof(int) atIndex:3];
-            [encoder setBytes:&n_cand_val length:sizeof(int) atIndex:4];
-            [encoder setBytes:&buffer length:sizeof(float) atIndex:5];
-            
-            MTLSize gridSize = MTLSizeMake(n_cand, 1, 1);
-            NSUInteger w = pipelineStateCandidates.maxTotalThreadsPerThreadgroup;
-            if (w > n_cand) w = n_cand;
-            MTLSize threadgroupSize = MTLSizeMake(w, 1, 1);
-            
-            [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
-            
-            [encoder endEncoding];
-            [commandBuffer commit];
-            [commandBuffer waitUntilCompleted];
-            
-            // Read results
-            int* rawResults = (int*)resultsBuffer.contents;
-            std::vector<int> results(n_cand);
-            memcpy(results.data(), rawResults, n_cand * sizeof(int));
-            
-            return results;
-        }
-    }
 };
 
 GpuContext& GpuContext::getInstance() {
@@ -450,18 +375,6 @@ std::vector<std::vector<ChristmasTree>> GpuContext::batch_sa_optimize(
         return p->batch_sa_optimize(solutions, params);
     }
     return solutions;
-}
-
-std::vector<int> GpuContext::check_candidates_overlap(
-    const std::vector<ChristmasTree>& fixed_trees,
-    const std::vector<ChristmasTree>& candidates,
-    float buffer
-) {
-    GpuContextImpl* p = (GpuContextImpl*)impl;
-    if (p->valid) {
-        return p->check_candidates_overlap(fixed_trees, candidates, buffer);
-    }
-    return std::vector<int>(candidates.size(), 0);
 }
 
 bool GpuContext::is_valid() {

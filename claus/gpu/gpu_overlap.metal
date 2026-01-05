@@ -174,6 +174,117 @@ kernel void check_overlaps(
     }
 }
 
+
+kernel void check_candidate_overlaps(
+    device const TreeData* fixed_trees [[ buffer(0) ]],
+    device const TreeData* candidates [[ buffer(1) ]],
+    device int* results [[ buffer(2) ]],
+    constant int& n_fixed [[ buffer(3) ]],
+    constant int& n_candidates [[ buffer(4) ]],
+    constant float& buffer_size [[ buffer(5) ]],
+    uint id [[ thread_position_in_grid ]]
+) {
+    if (id >= (uint)n_candidates) return;
+
+    TreeData cand = candidates[id];
+    
+    // Bounds check (hardcoded for now as per CPU)
+    if (cand.x < -100.0 || cand.x > 100.0 || cand.y < -100.0 || cand.y > 100.0) {
+        results[id] = 1; // Mark as invalid/overlap
+        return;
+    }
+
+    float scale = 1.0 + buffer_size;
+    
+    // Precompute candidate polygon
+    Point poly_c[15];
+    float rad_c = cand.angle * 3.14159265358979323846f / 180.0f;
+    float c_c = cos(rad_c);
+    float s_c = sin(rad_c);
+    
+    float min_xc = 1e9, min_yc = 1e9, max_xc = -1e9, max_yc = -1e9;
+    
+    for (int k = 0; k < 15; ++k) {
+        Point p = base_poly[k];
+        float rx = (p.x * c_c - p.y * s_c) * scale;
+        float ry = (p.x * s_c + p.y * c_c) * scale;
+        poly_c[k] = {rx + cand.x, ry + cand.y};
+        min_xc = min(min_xc, poly_c[k].x);
+        min_yc = min(min_yc, poly_c[k].y);
+        max_xc = max(max_xc, poly_c[k].x);
+        max_yc = max(max_yc, poly_c[k].y);
+    }
+    
+    // Check against all fixed trees
+    for (int i = 0; i < n_fixed; ++i) {
+        TreeData fixed = fixed_trees[i];
+        
+        // Fast radius/AABB check
+        float dx = cand.x - fixed.x;
+        float dy = cand.y - fixed.y;
+        float dist_sq = dx*dx + dy*dy;
+        
+        // Max radius approx 1.0
+        if (dist_sq > 4.0) continue; 
+        
+        // Strict overlap check
+        Point poly_f[15];
+        float rad_f = fixed.angle * 3.14159265358979323846f / 180.0f;
+        float c_f = cos(rad_f);
+        float s_f = sin(rad_f);
+        
+        float min_xf = 1e9, min_yf = 1e9, max_xf = -1e9, max_yf = -1e9;
+        
+        for (int k = 0; k < 15; ++k) {
+            Point p = base_poly[k];
+            float rx = (p.x * c_f - p.y * s_f) * scale;
+            float ry = (p.x * s_f + p.y * c_f) * scale;
+            poly_f[k] = {rx + fixed.x, ry + fixed.y};
+            min_xf = min(min_xf, poly_f[k].x);
+            min_yf = min(min_yf, poly_f[k].y);
+            max_xf = max(max_xf, poly_f[k].x);
+            max_yf = max(max_yf, poly_f[k].y);
+        }
+        
+        if (max_xc < min_xf || max_xf < min_xc || max_yc < min_yf || max_yf < min_yc) continue;
+        
+        bool overlap = false;
+        
+        // Edge intersection
+        for (int a = 0; a < 15; ++a) {
+            Point p1 = poly_c[a];
+            Point p2 = poly_c[(a + 1) % 15];
+            for (int b = 0; b < 15; ++b) {
+                Point q1 = poly_f[b];
+                Point q2 = poly_f[(b + 1) % 15];
+                if (segments_strict_intersect(p1, p2, q1, q2)) {
+                    overlap = true; break;
+                }
+            }
+            if (overlap) break;
+        }
+        
+        if (!overlap) {
+            // Point in poly check
+             for (int k = 0; k < 15; ++k) {
+                 if (point_in_polygon(poly_f[k], poly_c)) {
+                     overlap = true; break;
+                 }
+                 if (point_in_polygon(poly_c[k], poly_f)) {
+                     overlap = true; break;
+                 }
+             }
+        }
+        
+        if (overlap) {
+            results[id] = 1;
+            return;
+        }
+    }
+    
+    results[id] = 0;
+}
+
 struct PhysicsParams {
     float repulsion_strength;
     float gravity_strength;
@@ -482,7 +593,6 @@ bool check_overlap_pair(TreeData t1, TreeData t2) {
     // Need to transform.
     // Let's implement full check here.
     
-    float scale = 1.0; 
     Point poly1[15];
     Point poly2[15];
     float min_x1 = 1e9, min_y1 = 1e9, max_x1 = -1e9, max_y1 = -1e9;
@@ -541,11 +651,9 @@ kernel void batch_sa_optimize(
     int offset = offsets[group_id];
     
     threadgroup TreeData shared_trees[256];
-    threadgroup int shared_overlap_count;
-    threadgroup float shared_score;
     
     // Load trees
-    if (local_id < n) {
+    if (local_id < (uint)n) {
         shared_trees[local_id] = initial_trees[offset + local_id];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -558,17 +666,6 @@ kernel void batch_sa_optimize(
     // For now, let's just run SA to minimize energy (Side + Overlap).
     
     // Current Side Length
-    float min_x=1e9, max_x=-1e9, min_y=1e9, max_y=-1e9;
-    if (local_id < n) {
-        // Compute my bounds
-        // Just approximate with center? No, need real bounds.
-        // We can use AABB of each tree.
-        TreeData t = shared_trees[local_id];
-        // ... (compute bounds) ...
-        // Reduce min/max across threads?
-        // This is complex to do every step.
-        // Approximation: Minimize Max(x) - Min(x) etc.
-    }
     
     // Simplified SA:
     // Leader picks move.
@@ -579,7 +676,6 @@ kernel void batch_sa_optimize(
     threadgroup TreeData backup_tree;
     threadgroup int delta_overlaps;
     threadgroup float move_dx, move_dy, move_ddeg;
-    threadgroup int accepted;
     
     float T = params.Tmax;
     
@@ -603,7 +699,7 @@ kernel void batch_sa_optimize(
         threadgroup_barrier(mem_flags::mem_threadgroup);
         
         // 2. Parallel Check
-        if (local_id < n && local_id != move_idx) {
+        if (local_id < (uint)n && local_id != (uint)move_idx) {
             bool old_ov = check_overlap_pair(shared_trees[local_id], backup_tree);
             bool new_ov = check_overlap_pair(shared_trees[local_id], shared_trees[move_idx]);
             
@@ -650,7 +746,7 @@ kernel void batch_sa_optimize(
     }
     
     // Write back
-    if (local_id < n) {
+    if (local_id < (uint)n) {
         final_trees[offset + local_id] = shared_trees[local_id];
     }
 }

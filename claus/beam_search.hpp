@@ -98,7 +98,8 @@ public:
         );
     }
 
-    std::vector<ChristmasTree> solve(int target_n, int beam_width) {
+    std::vector<ChristmasTree> solve(int target_n, int beam_width, 
+                                   std::vector<std::pair<long double, std::vector<ChristmasTree>>>* best_results = nullptr) {
         // 1. Initialize Beam with a single tree at (0,0,0)
         std::vector<BeamState> current_beam;
         BeamState initial_state;
@@ -106,66 +107,147 @@ public:
         initial_state.update_score();
         current_beam.push_back(initial_state);
 
+        // Record initial state for N=1
+        if (best_results && best_results->size() > 1) {
+            if (initial_state.side_length < (*best_results)[1].first) {
+                (*best_results)[1] = {initial_state.side_length, initial_state.trees};
+            }
+        }
+
+        bool use_gpu = GpuContext::getInstance().is_valid();
+        if (use_gpu) {
+            std::cout << "Beam Search: GPU Acceleration Enabled." << std::endl;
+        } else {
+            std::cout << "Beam Search: GPU Unavailable, using CPU." << std::endl;
+        }
+
         std::cout << "Starting Beam Search (Target N=" << target_n 
                   << ", Beam=" << beam_width << ")..." << std::endl;
 
         // 2. Iterate until we reach target size
         for (int n = 1; n < target_n; ++n) {
             
-            // Thread-local storage for next states
-            std::vector<std::vector<BeamState>> next_states_per_thread(omp_get_max_threads());
+            std::vector<BeamState> all_next_states;
 
-            #pragma omp parallel for schedule(dynamic)
-            for (size_t i = 0; i < current_beam.size(); ++i) {
-                const auto& state = current_beam[i];
-                int tid = omp_get_thread_num();
+            if (use_gpu) {
+                // GPU Path: Serial over beam states, batch over patterns
+                // To avoid massive memory usage, we process one state at a time
+                // and prune locally if needed, though with width=20 it's fine.
                 
-                // Heuristic: Don't expand states that are already much worse than the best
-                // (Optional implementation detail)
+                const int BATCH_SIZE = 500000; // 500k candidates per batch
 
-                // Try to attach a new tree to EVERY existing tree in this state
-                for (const auto& anchor : state.trees) {
+                for (const auto& state : current_beam) {
+                    // For this state, we generate candidates from all anchors and all patterns
+                    // We can iterate patterns and for each pattern apply to all anchors
+                    // Or iterate anchors.
+                    // Total candidates = n * patterns.size()
+                    // This can be huge (10 * 1.9M = 19M).
+                    // We must batch.
                     
-                    // Try ALL patterns (or a random subset if 69k is too slow)
-                    for (const auto& pat : patterns) {
+                    std::vector<ChristmasTree> candidate_batch;
+                    candidate_batch.reserve(BATCH_SIZE);
+                    
+                    for (size_t pat_idx = 0; pat_idx < patterns.size(); ++pat_idx) {
+                        const auto& pat = patterns[pat_idx];
                         
-                        ChristmasTree candidate = apply_pattern(anchor, pat);
-
-                        // A. Bounds Check (Fast fail)
-                        // If candidate pushes side length > current_max * threshold, skip
-                        if (std::abs(candidate.center_x) > 50.0 || std::abs(candidate.center_y) > 50.0) continue;
-
-                        // B. Overlap Check (Expensive)
-                        // Note: overlaps::has_overlap_with_others checks if 'candidate' overlaps any tree in 'state.trees'
-                        if (overlap::has_overlap_with_others(state.trees, candidate)) {
-                            continue;
+                        for (const auto& anchor : state.trees) {
+                            ChristmasTree cand = apply_pattern(anchor, pat);
+                            
+                            // A. Bounds Check (Fast fail on CPU)
+                            if (std::abs(cand.center_x) > 50.0 || std::abs(cand.center_y) > 50.0) continue;
+                            
+                            candidate_batch.push_back(cand);
+                            
+                            if (candidate_batch.size() >= BATCH_SIZE) {
+                                // Flush batch
+                                auto results = GpuContext::getInstance().check_candidates_overlap(state.trees, candidate_batch);
+                                
+                                for(size_t k=0; k<candidate_batch.size(); ++k) {
+                                    if (results[k] == 0) { // Valid (0 = no overlap)
+                                        BeamState new_state = state;
+                                        new_state.trees.push_back(candidate_batch[k]);
+                                        new_state.update_score();
+                                        all_next_states.push_back(std::move(new_state));
+                                    }
+                                }
+                                candidate_batch.clear();
+                                
+                                // Intermediate pruning if list gets too large
+                                if (all_next_states.size() > (size_t)(beam_width * 20)) {
+                                     std::partial_sort(all_next_states.begin(), 
+                                                       all_next_states.begin() + beam_width * 5, 
+                                                       all_next_states.end(), 
+                                        [](const BeamState& a, const BeamState& b) { return a.side_length < b.side_length; });
+                                     all_next_states.resize(beam_width * 5);
+                                }
+                            }
                         }
-
-                        // C. Create new state
-                        BeamState new_state = state;
-                        new_state.trees.push_back(candidate);
-                        new_state.update_score();
-
-                        next_states_per_thread[tid].push_back(std::move(new_state));
-                        
-                        // Optimization: Prune thread-local buffer if it gets too huge 
-                        // to save memory, keeping only top 2*beam_width locally
-                        if (next_states_per_thread[tid].size() > (size_t)(beam_width * 2)) {
-                             auto& vec = next_states_per_thread[tid];
-                             std::partial_sort(vec.begin(), vec.begin() + beam_width, vec.end(), 
-                                [](const BeamState& a, const BeamState& b) { return a.side_length < b.side_length; });
-                             vec.resize(beam_width);
+                    }
+                    
+                    // Flush remaining
+                    if (!candidate_batch.empty()) {
+                        auto results = GpuContext::getInstance().check_candidates_overlap(state.trees, candidate_batch);
+                        for(size_t k=0; k<candidate_batch.size(); ++k) {
+                            if (results[k] == 0) {
+                                BeamState new_state = state;
+                                new_state.trees.push_back(candidate_batch[k]);
+                                new_state.update_score();
+                                all_next_states.push_back(std::move(new_state));
+                            }
                         }
                     }
                 }
-            }
-
-            // 3. Merge candidates from all threads
-            std::vector<BeamState> all_next_states;
-            for (auto& local_vec : next_states_per_thread) {
-                all_next_states.insert(all_next_states.end(), 
-                                     std::make_move_iterator(local_vec.begin()), 
-                                     std::make_move_iterator(local_vec.end()));
+                
+            } else {
+                // CPU Path (OpenMP)
+                // Thread-local storage for next states
+                std::vector<std::vector<BeamState>> next_states_per_thread(omp_get_max_threads());
+    
+                #pragma omp parallel for schedule(dynamic)
+                for (size_t i = 0; i < current_beam.size(); ++i) {
+                    const auto& state = current_beam[i];
+                    int tid = omp_get_thread_num();
+                    
+                    // Try to attach a new tree to EVERY existing tree in this state
+                    for (const auto& anchor : state.trees) {
+                        
+                        // Try ALL patterns (or a random subset if 69k is too slow)
+                        for (const auto& pat : patterns) {
+                            
+                            ChristmasTree candidate = apply_pattern(anchor, pat);
+    
+                            // A. Bounds Check (Fast fail)
+                            if (std::abs(candidate.center_x) > 50.0 || std::abs(candidate.center_y) > 50.0) continue;
+    
+                            // B. Overlap Check (Expensive)
+                            if (overlap::has_overlap_with_others(state.trees, candidate)) {
+                                continue;
+                            }
+    
+                            // C. Create new state
+                            BeamState new_state = state;
+                            new_state.trees.push_back(candidate);
+                            new_state.update_score();
+    
+                            next_states_per_thread[tid].push_back(std::move(new_state));
+                            
+                            // Optimization: Prune thread-local buffer if it gets too huge 
+                            if (next_states_per_thread[tid].size() > (size_t)(beam_width * 2)) {
+                                 auto& vec = next_states_per_thread[tid];
+                                 std::partial_sort(vec.begin(), vec.begin() + beam_width, vec.end(), 
+                                    [](const BeamState& a, const BeamState& b) { return a.side_length < b.side_length; });
+                                 vec.resize(beam_width);
+                            }
+                        }
+                    }
+                }
+                
+                // Merge candidates from all threads
+                for (auto& local_vec : next_states_per_thread) {
+                    all_next_states.insert(all_next_states.end(), 
+                                         std::make_move_iterator(local_vec.begin()), 
+                                         std::make_move_iterator(local_vec.end()));
+                }
             }
 
             if (all_next_states.empty()) {
@@ -185,6 +267,16 @@ public:
             
             all_next_states.resize(keep_count);
             current_beam = std::move(all_next_states);
+
+            // Save best result for N = n + 1
+            if (best_results && !current_beam.empty()) {
+                int current_N = n + 1;
+                if (current_N < (int)best_results->size()) {
+                    if (current_beam[0].side_length < (*best_results)[current_N].first) {
+                        (*best_results)[current_N] = {current_beam[0].side_length, current_beam[0].trees};
+                    }
+                }
+            }
 
             std::cout << "  N=" << (n + 1) 
                       << " | Best Score: " << current_beam[0].side_length 

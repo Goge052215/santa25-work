@@ -26,6 +26,14 @@ public:
         const SAParamsGPU& params
     );
 
+    // Check overlaps for a batch of candidates against a fixed set of trees
+    // Returns: vector of booleans (true = overlap/invalid, false = valid)
+    std::vector<int> check_candidates_overlap(
+        const std::vector<ChristmasTree>& fixed_trees,
+        const std::vector<ChristmasTree>& candidates,
+        float buffer = 0.0f
+    );
+
 private:
     GpuContext();
     ~GpuContext();

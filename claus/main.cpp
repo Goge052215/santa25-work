@@ -253,6 +253,36 @@ int main() {
     std::vector<std::pair<long double, std::vector<ChristmasTree>>> best_results(201);
     for (int i = 0; i <= 200; ++i) best_results[i].first = 1e18L;
 
+    // Beam Search Initialization
+    BeamSearch beam;
+    // Try to load patterns if file exists, otherwise generate defaults
+    std::string pattern_file = "data/patterns.csv";
+    struct stat pat_stat;
+    if (stat(pattern_file.c_str(), &pat_stat) == 0) {
+        beam.load_patterns(pattern_file);
+    } else {
+        std::cout << "No pattern file found. Generating default heuristic patterns..." << std::endl;
+        // Generate simple dense patterns
+        // Radial grid around the tree
+        std::vector<double> radii = {0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5};
+        for (double r : radii) {
+            for (int ang = 0; ang < 360; ang += 10) { // 36 angles
+                 double rad = ang * M_PI / 180.0;
+                 double dx = r * cos(rad);
+                 double dy = r * sin(rad);
+                 // Also try different relative rotations
+                 for (double rot = 0; rot < 360; rot += 30) { // 12 rotations
+                     beam.patterns.push_back({dx, dy, rot, 1.0});
+                 }
+            }
+        }
+        std::cout << "Generated " << beam.patterns.size() << " default patterns." << std::endl;
+    }
+
+    // Run Beam Search for N=1 to 200 with a modest beam width
+    // This will populate best_results with constructive baselines
+    beam.solve(200, 20, &best_results);
+
     // Load existing solutions and refine
     mkdir("data/solutions", 0755);
     std::string submission_path = "data/submission.csv";
